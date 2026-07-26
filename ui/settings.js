@@ -57,57 +57,124 @@ function prettyHotkey(hk) {
   }).join(' + ');
 }
 
-/* 捕获在 Rust 原生层进行（GetAsyncKeyState 轮询物理键盘）：
- * 网页 keydown 会被 输入法切换(Ctrl+Space / Ctrl+Shift)、窗口菜单(Alt+Space)
- * 等系统热键截胡，只有物理层捕获对任意组合都可靠。 */
+/* 捕获在 Rust 原生层进行（WH_KEYBOARD_LL 低级键盘钩子），网页事件作为兜底。
+ * 原生层能覆盖输入法切换(Ctrl+Space)、窗口菜单(Alt+Space)等系统热键；
+ * 网页层则保证普通按键不会因为原生线程启动或事件回传竞态而丢失。 */
+const MAX_HOTKEY_KEYS = 2;
+const MODIFIER_CODES = new Set(['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight',
+  'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight']);
+
+function isSupportedPrimary(code) {
+  return /^(Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Arrow(?:Left|Up|Right|Down)|Home|End|Page(?:Up|Down)|Insert|Delete|Backquote|Minus|Equal|Bracket(?:Left|Right)|Backslash|Semicolon|Quote|Comma|Period|Slash)$/.test(code);
+}
+
+function hotkeyFromEvent(e) {
+  if (!e.code || MODIFIER_CODES.has(e.code)) return null;
+  if (!isSupportedPrimary(e.code)) return { invalid: true };
+  const parts = [];
+  if (e.ctrlKey) parts.push('ctrl');
+  if (e.altKey) parts.push('alt');
+  if (e.shiftKey) parts.push('shift');
+  if (e.metaKey) parts.push('super');
+  parts.push(e.code);
+  if (parts.length > MAX_HOTKEY_KEYS) return { invalid: true };
+  // Keep the existing F-key-only behavior, but reject bare character keys.
+  if (parts.length === 1 && !/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(e.code)) {
+    return { invalid: true };
+  }
+  return { hotkey: parts.join('+') };
+}
+
 let capturing = false;
+let captureEventsReady = false;
 
 function stopCapture(restore) {
   if (!capturing) return;
   capturing = false;
-  if (restore) invoke('capture_hotkey_end');
+  if (restore) void invoke('capture_hotkey_end');
   const box = $('hotkeyBox');
   box.classList.remove('capturing');
   box.textContent = prettyHotkey(cfg?.hotkey);
 }
 
-function setupHotkeyCapture() {
+async function commitCapturedHotkey(hotkey) {
+  if (!capturing) return;
+  capturing = false;
+  const box = $('hotkeyBox');
+  box.classList.remove('capturing');
+  box.textContent = prettyHotkey(hotkey);
+
+  try {
+    // Always end the capture session first. This also handles capturing the
+    // currently configured shortcut, which otherwise stays unregistered.
+    await invoke('capture_hotkey_end');
+    cfg.hotkey = hotkey;
+    await invoke('set_config', { config: cfg });
+    toast('快捷键已更新');
+  } catch (err) {
+    toast('注册失败：' + err);
+    cfg = await invoke('get_config');
+    render();
+  }
+}
+
+async function setupHotkeyCapture() {
   const box = $('hotkeyBox');
 
   box.addEventListener('click', async () => {
-    if (capturing) return;
-    try { await invoke('capture_hotkey_begin'); } catch (_) { return; }
+    if (capturing || !captureEventsReady) return;
     capturing = true;
     box.classList.add('capturing');
     box.textContent = '请按下新的组合键…（Esc 取消）';
     box.focus();
-  });
-
-  box.addEventListener('blur', () => stopCapture(true));
-  window.addEventListener('beforeunload', () => { if (capturing) invoke('capture_hotkey_end'); });
-
-  listen('hotkey:captured', async e => {
-    if (!capturing) return;
-    capturing = false;
-    cfg.hotkey = e.payload.hotkey;
-    box.classList.remove('capturing');
-    box.textContent = prettyHotkey(cfg.hotkey);
     try {
-      await invoke('set_config', { config: cfg });   // 注册新键并落盘
-      toast('快捷键已更新');
+      await invoke('capture_hotkey_begin');
     } catch (err) {
-      toast('注册失败：' + err);
-      cfg = await invoke('get_config');
-      render();
-      invoke('capture_hotkey_end');                  // 恢复旧键
+      stopCapture(false);
+      toast('无法开始监听：' + err);
     }
   });
 
-  listen('hotkey:capture_invalid', () => {
-    if (capturing) box.textContent = '请加上 Ctrl / Alt / Shift / Win…';
+  // Do not cancel on blur: Alt+Space can open the native window menu and
+  // briefly move focus even though the global capture session is still valid.
+  window.addEventListener('pointerdown', e => {
+    if (capturing && !box.contains(e.target)) stopCapture(true);
   });
+  window.addEventListener('keydown', e => {
+    if (!capturing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === 'Escape') {
+      stopCapture(true);
+      return;
+    }
+    const result = hotkeyFromEvent(e);
+    if (!result) return;
+    if (result.invalid) {
+      box.textContent = '仅支持最多两个按键（字符键需配合 Ctrl / Alt / Shift / Win）';
+      return;
+    }
+    void commitCapturedHotkey(result.hotkey);
+  }, true);
+  window.addEventListener('beforeunload', () => { if (capturing) invoke('capture_hotkey_end'); });
 
-  listen('hotkey:capture_cancel', () => stopCapture(true));
+  await Promise.all([
+    listen('hotkey:captured', e => {
+      const hotkey = e.payload?.hotkey;
+      if (typeof hotkey === 'string') void commitCapturedHotkey(hotkey);
+    }),
+    listen('hotkey:capture_invalid', () => {
+      if (capturing) box.textContent = '仅支持最多两个按键（字符键需配合 Ctrl / Alt / Shift / Win）';
+    }),
+    listen('hotkey:capture_cancel', () => stopCapture(true)),
+    listen('hotkey:capture_error', e => {
+      if (!capturing) return;
+      const message = e.payload?.message || '键盘监听器异常退出';
+      stopCapture(true);
+      toast(message);
+    }),
+  ]);
+  captureEventsReady = true;
 }
 
 /* ---------- 线程测速 ---------- */
@@ -262,7 +329,7 @@ function bind() {
   cfg = await invoke('get_config');
   render();
   bind();
-  setupHotkeyCapture();
+  await setupHotkeyCapture();
   setupBench();
   loadMics();
   renderEngine(await invoke('engine_status'));

@@ -1,29 +1,131 @@
 //! 全局快捷键：解析、注册（强制替换语义）、捕获期挂起、按键松开与 Esc 的轮询看门。
 
+use std::sync::atomic::AtomicU32;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-/// "ctrl+alt+Space" → Shortcut。修饰键小写；主键用 W3C Code 名（Space/KeyA/F8…）
+/// A global shortcut contains at most one modifier and one primary key.
+pub const MAX_HOTKEY_KEYS: usize = 2;
+
+static CAPTURE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// "ctrl+Space" → Shortcut。修饰键小写；主键用 W3C Code 名（Space/KeyA/F8…）
 pub fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
     let mut mods = Modifiers::empty();
     let mut code: Option<Code> = None;
-    for part in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+    let mut key_count = 0;
+    for raw_part in s.split('+') {
+        let part = raw_part.trim();
+        if part.is_empty() {
+            return Err("快捷键包含空按键".to_string());
+        }
         match part.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => mods |= Modifiers::CONTROL,
-            "alt" | "option" => mods |= Modifiers::ALT,
-            "shift" => mods |= Modifiers::SHIFT,
-            "super" | "win" | "meta" | "cmd" => mods |= Modifiers::SUPER,
+            "ctrl" | "control" => {
+                if mods.contains(Modifiers::CONTROL) {
+                    return Err("快捷键不能重复包含 Ctrl".to_string());
+                }
+                mods |= Modifiers::CONTROL;
+                key_count += 1;
+            }
+            "alt" | "option" => {
+                if mods.contains(Modifiers::ALT) {
+                    return Err("快捷键不能重复包含 Alt".to_string());
+                }
+                mods |= Modifiers::ALT;
+                key_count += 1;
+            }
+            "shift" => {
+                if mods.contains(Modifiers::SHIFT) {
+                    return Err("快捷键不能重复包含 Shift".to_string());
+                }
+                mods |= Modifiers::SHIFT;
+                key_count += 1;
+            }
+            "super" | "win" | "meta" | "cmd" => {
+                if mods.contains(Modifiers::SUPER) {
+                    return Err("快捷键不能重复包含 Win".to_string());
+                }
+                mods |= Modifiers::SUPER;
+                key_count += 1;
+            }
             _ => {
+                if code.is_some() {
+                    return Err(format!("全局快捷键最多包含 {MAX_HOTKEY_KEYS} 个按键"));
+                }
                 code = Some(
                     part.parse::<Code>()
                         .map_err(|_| format!("无法识别的按键：{part}"))?,
                 );
+                key_count += 1;
             }
         }
+    }
+    if key_count > MAX_HOTKEY_KEYS {
+        return Err(format!("全局快捷键最多包含 {MAX_HOTKEY_KEYS} 个按键"));
     }
     let code = code.ok_or_else(|| "快捷键缺少主键".to_string())?;
     let m = if mods.is_empty() { None } else { Some(mods) };
     Ok(Shortcut::new(m, code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_a_modifier_and_primary_key() {
+        let shortcut = parse_shortcut("ctrl+Space").expect("two-key shortcut should parse");
+        assert_eq!(shortcut.mods, Modifiers::CONTROL);
+        assert_eq!(shortcut.key, Code::Space);
+    }
+
+    #[test]
+    fn rejects_more_than_two_keys() {
+        for value in ["ctrl+alt+Space", "ctrl+shift+Space", "ctrl+Space+KeyA"] {
+            let error = parse_shortcut(value).expect_err("three-key shortcut should be rejected");
+            assert!(error.contains("最多包含 2 个按键"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_modifiers() {
+        let error = parse_shortcut("ctrl+ctrl+Space").expect_err("duplicate modifier");
+        assert!(error.contains("不能重复"));
+    }
+
+    #[test]
+    fn rejects_empty_tokens() {
+        let error = parse_shortcut("ctrl++Space").expect_err("empty token");
+        assert!(error.contains("空按键"));
+    }
+
+    #[test]
+    fn capture_state_records_regular_and_system_combinations() {
+        let mut ctrl = CaptureKeyState::default();
+        assert_eq!(ctrl.handle(0x0100, 0xA2), None);
+        assert_eq!(
+            ctrl.handle(0x0100, 0x41),
+            Some(CaptureEvent::Captured("ctrl+KeyA".to_string()))
+        );
+
+        let mut alt = CaptureKeyState::default();
+        assert_eq!(alt.handle(0x0104, 0xA4), None);
+        assert_eq!(
+            alt.handle(0x0104, 0x20),
+            Some(CaptureEvent::Captured("alt+Space".to_string()))
+        );
+    }
+
+    #[test]
+    fn capture_state_handles_escape_and_rejects_three_keys() {
+        let mut cancel = CaptureKeyState::default();
+        assert_eq!(cancel.handle(0x0100, 0x1B), Some(CaptureEvent::Cancel));
+
+        let mut overlong = CaptureKeyState::default();
+        assert_eq!(overlong.handle(0x0100, 0xA2), None);
+        assert_eq!(overlong.handle(0x0104, 0xA4), None);
+        assert_eq!(overlong.handle(0x0100, 0x41), Some(CaptureEvent::Invalid));
+    }
 }
 
 /// 强制注册主快捷键：先注销旧的再注册新的；失败时尝试回滚旧键。
@@ -254,102 +356,316 @@ fn vk_to_code(vk: u32) -> Option<Code> {
     Some(code)
 }
 
-/// 原生快捷键捕获：轮询物理键盘状态（GetAsyncKeyState）。
-/// 网页 keydown 会被输入法切换（Ctrl+Space / Ctrl+Shift）、系统菜单（Alt+Space）
-/// 等系统级热键截胡；物理层轮询对这些全部免疫，任何组合都能捕到。
-/// 结果经事件推给设置页：hotkey:captured / hotkey:capture_invalid / hotkey:capture_cancel
-pub fn spawn_capture(app: &AppHandle, gen: u64) {
-    let app = app.clone();
-    std::thread::spawn(move || {
-        use std::sync::atomic::Ordering;
-        use tauri::Emitter;
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+#[derive(Default)]
+struct CaptureModifiers {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+}
 
-        let down = |vk: u32| unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0;
-        let stale = |app: &AppHandle| {
-            app.state::<crate::app::AppState>()
-                .capture_gen
-                .load(Ordering::SeqCst)
-                != gen
+impl CaptureModifiers {
+    fn set(&mut self, vk: u32, pressed: bool) -> bool {
+        match vk {
+            0x10 | 0xA0 | 0xA1 => self.shift = pressed,
+            0x11 | 0xA2 | 0xA3 => self.ctrl = pressed,
+            0x12 | 0xA4 | 0xA5 => self.alt = pressed,
+            0x5B | 0x5C => self.win = pressed,
+            _ => return false,
+        }
+        true
+    }
+
+    fn count(&self) -> usize {
+        [self.ctrl, self.alt, self.shift, self.win]
+            .into_iter()
+            .filter(|pressed| *pressed)
+            .count()
+    }
+
+    fn any(&self) -> bool {
+        self.ctrl || self.alt || self.shift || self.win
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CaptureEvent {
+    Captured(String),
+    Invalid,
+    Cancel,
+}
+
+#[derive(Default)]
+struct CaptureKeyState {
+    modifiers: CaptureModifiers,
+    ignored_key: Option<u32>,
+    done: bool,
+}
+
+impl CaptureKeyState {
+    fn handle(&mut self, message: u32, vk: u32) -> Option<CaptureEvent> {
+        const WM_KEYDOWN: u32 = 0x0100;
+        const WM_KEYUP: u32 = 0x0101;
+        const WM_SYSKEYDOWN: u32 = 0x0104;
+        const WM_SYSKEYUP: u32 = 0x0105;
+
+        if self.done {
+            return None;
+        }
+
+        if message == WM_KEYUP || message == WM_SYSKEYUP {
+            self.modifiers.set(vk, false);
+            if self.ignored_key == Some(vk) {
+                self.ignored_key = None;
+            }
+            return None;
+        }
+        if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
+            return None;
+        }
+        if self.modifiers.set(vk, true) {
+            return None;
+        }
+        if vk == 0x1B {
+            self.done = true;
+            return Some(CaptureEvent::Cancel);
+        }
+        if self.ignored_key.is_some() {
+            return None;
+        }
+
+        let code = vk_to_code(vk)?;
+        let is_function_key = (0x70..=0x87).contains(&vk);
+        if self.modifiers.count() + 1 > MAX_HOTKEY_KEYS
+            || (!self.modifiers.any() && !is_function_key)
+        {
+            self.ignored_key = Some(vk);
+            return Some(CaptureEvent::Invalid);
+        }
+
+        let mut parts = Vec::with_capacity(MAX_HOTKEY_KEYS);
+        if self.modifiers.ctrl {
+            parts.push("ctrl".to_string());
+        }
+        if self.modifiers.alt {
+            parts.push("alt".to_string());
+        }
+        if self.modifiers.shift {
+            parts.push("shift".to_string());
+        }
+        if self.modifiers.win {
+            parts.push("super".to_string());
+        }
+        parts.push(code.to_string());
+        self.done = true;
+        Some(CaptureEvent::Captured(parts.join("+")))
+    }
+}
+
+const WM_CAPTURE_KEY: u32 = 0x8001;
+
+unsafe extern "system" fn capture_keyboard_hook(
+    hook_code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, PostThreadMessageW, HC_ACTION, KBDLLHOOKSTRUCT,
+    };
+
+    if hook_code == HC_ACTION as i32 && lparam.0 != 0 {
+        let key = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        let thread_id = CAPTURE_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if thread_id != 0 {
+            let _ = unsafe {
+                PostThreadMessageW(
+                    thread_id,
+                    WM_CAPTURE_KEY,
+                    WPARAM(key.vkCode as usize),
+                    LPARAM(wparam.0 as isize),
+                )
+            };
+        }
+    }
+
+    unsafe { CallNextHookEx(None, hook_code, wparam, lparam) }
+}
+
+fn emit_capture_event(app: &AppHandle, event: CaptureEvent) -> bool {
+    use tauri::Emitter;
+
+    match event {
+        CaptureEvent::Captured(hotkey) => {
+            tracing::info!("低级键盘钩子捕获到快捷键：{hotkey}");
+            let _ = app.emit_to(
+                "settings",
+                "hotkey:captured",
+                serde_json::json!({ "hotkey": hotkey }),
+            );
+            true
+        }
+        CaptureEvent::Invalid => {
+            let _ = app.emit_to("settings", "hotkey:capture_invalid", serde_json::json!({}));
+            false
+        }
+        CaptureEvent::Cancel => {
+            let _ = app.emit_to("settings", "hotkey:capture_cancel", serde_json::json!({}));
+            true
+        }
+    }
+}
+
+fn run_capture_hook(
+    app: AppHandle,
+    gen: u64,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+) {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMessageW, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_NOREMOVE,
+        WH_KEYBOARD_LL,
+    };
+
+    let thread_id = unsafe { GetCurrentThreadId() };
+    let mut message = MSG::default();
+    let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+
+    let state = app.state::<crate::app::AppState>();
+    state.capture_thread_id.store(thread_id, Ordering::SeqCst);
+    if state.capture_gen.load(Ordering::SeqCst) != gen {
+        let _ = state.capture_thread_id.compare_exchange(
+            thread_id,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        let _ = ready.send(Err("快捷键捕获已取消".to_string()));
+        return;
+    }
+    drop(state);
+
+    CAPTURE_HOOK_THREAD_ID.store(thread_id, Ordering::SeqCst);
+
+    let hook =
+        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(capture_keyboard_hook), None, 0) } {
+            Ok(hook) => hook,
+            Err(error) => {
+                let _ = CAPTURE_HOOK_THREAD_ID.compare_exchange(
+                    thread_id,
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                let state = app.state::<crate::app::AppState>();
+                let _ = state.capture_thread_id.compare_exchange(
+                    thread_id,
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                let _ = ready.send(Err(format!("安装键盘监听器失败：{error}")));
+                return;
+            }
         };
 
-        // 候选主键
-        let mut vks: Vec<u32> = vec![0x20];
-        vks.extend(0x41..=0x5A); // A-Z
-        vks.extend(0x30..=0x39); // 0-9
-        vks.extend(0x70..=0x87); // F1-F24
-        vks.extend([0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E]);
-        vks.extend([
-            0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xDB, 0xDC, 0xDD, 0xDE,
-        ]);
+    tracing::info!("低级键盘捕获钩子已启动（线程 {thread_id}）");
+    let _ = ready.send(Ok(()));
+    let mut message_error = None;
+    let mut keys = CaptureKeyState::default();
 
-        // 先等所有候选键与 Esc 抬起（吃掉点击按钮瞬间的残留状态）
-        loop {
-            if stale(&app) {
-                return;
-            }
-            if !down(0x1B) && !vks.iter().any(|&v| down(v)) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(15));
+    loop {
+        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        if result.0 == -1 {
+            message_error = Some("键盘监听消息循环异常退出".to_string());
+            break;
+        }
+        if result.0 == 0 {
+            break;
+        }
+        if message.message != WM_CAPTURE_KEY {
+            continue;
         }
 
-        'outer: loop {
-            if stale(&app) {
-                return;
-            }
-            if down(0x1B) {
-                let _ = app.emit_to("settings", "hotkey:capture_cancel", serde_json::json!({}));
-                return;
-            }
-            for &vk in &vks {
-                if !down(vk) {
-                    continue;
-                }
-                let ctrl = down(0x11);
-                let alt = down(0x12);
-                let shift = down(0x10);
-                let win = down(0x5B) || down(0x5C);
-                let is_f = (0x70..=0x87).contains(&vk);
-                if !(ctrl || alt || shift || win) && !is_f {
-                    // 裸键（非 F 键）不允许，等抬起后继续等待
-                    let _ =
-                        app.emit_to("settings", "hotkey:capture_invalid", serde_json::json!({}));
-                    while down(vk) {
-                        if stale(&app) {
-                            return;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(15));
-                    }
-                    continue 'outer;
-                }
-                let Some(code) = vk_to_code(vk) else { continue };
-                let mut parts: Vec<String> = vec![];
-                if ctrl {
-                    parts.push("ctrl".into());
-                }
-                if alt {
-                    parts.push("alt".into());
-                }
-                if shift {
-                    parts.push("shift".into());
-                }
-                if win {
-                    parts.push("super".into());
-                }
-                parts.push(code.to_string());
-                let hotkey = parts.join("+");
-                tracing::info!("原生捕获到快捷键：{hotkey}");
-                let _ = app.emit_to(
-                    "settings",
-                    "hotkey:captured",
-                    serde_json::json!({ "hotkey": hotkey }),
-                );
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(15));
+        if app
+            .state::<crate::app::AppState>()
+            .capture_gen
+            .load(Ordering::SeqCst)
+            != gen
+        {
+            break;
         }
-    });
+        let event = keys.handle(message.lParam.0 as u32, message.wParam.0 as u32);
+        if event.is_some_and(|event| emit_capture_event(&app, event)) {
+            break;
+        }
+    }
+
+    if let Err(error) = unsafe { UnhookWindowsHookEx(hook) } {
+        tracing::error!("卸载键盘捕获钩子失败：{error}");
+    }
+    let _ =
+        CAPTURE_HOOK_THREAD_ID.compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
+    let state = app.state::<crate::app::AppState>();
+    let _ =
+        state
+            .capture_thread_id
+            .compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
+    drop(state);
+    tracing::info!("低级键盘捕获钩子已停止（线程 {thread_id}）");
+
+    if let Some(error) = message_error {
+        tracing::error!("{error}");
+        let _ = app.emit_to(
+            "settings",
+            "hotkey:capture_error",
+            serde_json::json!({ "message": error }),
+        );
+    }
+}
+
+/// 原生快捷键捕获：安装 WH_KEYBOARD_LL 低级键盘钩子并运行 Windows 消息循环。
+/// 这与 rdev/global keyboard listener 的 Windows 实现一致，可捕获被输入法或系统菜单
+/// 截获的 Ctrl+Space、Alt+Space 和 Esc。函数会等待钩子安装完成后再返回。
+pub fn spawn_capture(app: &AppHandle, gen: u64) -> Result<(), String> {
+    use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+    use std::time::Duration;
+
+    let (ready_tx, ready_rx) = sync_channel(1);
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("blurt-hotkey-capture".to_string())
+        .spawn(move || run_capture_hook(app, gen, ready_tx))
+        .map_err(|error| format!("启动键盘监听线程失败：{error}"))?;
+
+    match ready_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err("启动键盘监听器超时".to_string()),
+        Err(RecvTimeoutError::Disconnected) => Err("键盘监听线程异常退出".to_string()),
+    }
+}
+
+/// 停止当前捕获线程。线程消息队列在安装钩子前已创建，因此 WM_QUIT 不会丢失。
+pub fn stop_capture(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+    let thread_id = app
+        .state::<crate::app::AppState>()
+        .capture_thread_id
+        .swap(0, Ordering::SeqCst);
+    if thread_id == 0 {
+        return;
+    }
+    let _ =
+        CAPTURE_HOOK_THREAD_ID.compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
+    if let Err(error) = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
+        tracing::debug!("停止键盘捕获线程 {thread_id} 时消息投递失败：{error}");
+    }
 }
 
 /// 兜底松开监视：插件的 Released 事件之外再轮询一层，确保“按住说话”一定能停下。

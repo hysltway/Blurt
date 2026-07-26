@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// 全局快捷键：修饰键小写 + W3C 键码，例如 "ctrl+alt+Space"
+    /// 全局快捷键：修饰键小写 + W3C 键码，例如 "ctrl+Space"
     pub hotkey: String,
     /// 注入方式：auto | type | paste
     pub inject_mode: String,
@@ -30,7 +30,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hotkey: "ctrl+alt+Space".into(),
+            hotkey: "ctrl+Space".into(),
             inject_mode: "auto".into(),
             type_threshold: 20,
             mic_device: None,
@@ -74,7 +74,22 @@ fn state_path() -> PathBuf {
 pub fn load() -> Config {
     let p = config_path();
     match fs::read_to_string(&p) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Ok(s) => {
+            let mut c: Config = serde_json::from_str(&s).unwrap_or_default();
+            // Versions before the two-key limit used Ctrl+Alt+Space by default.
+            // Migrate any overlong persisted shortcut so an upgrade does not
+            // leave the app without a registered global shortcut.
+            if c.hotkey
+                .split('+')
+                .filter(|part| !part.trim().is_empty())
+                .count()
+                > 2
+            {
+                c.hotkey = Config::default().hotkey;
+                let _ = save(&c);
+            }
+            c
+        }
         Err(_) => {
             let c = Config::default();
             let _ = save(&c);

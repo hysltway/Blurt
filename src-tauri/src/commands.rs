@@ -21,6 +21,10 @@ pub fn set_config(
 ) -> Result<(), String> {
     let old = state.config.read().clone();
 
+    // Validate even when the value did not change so malformed legacy config
+    // cannot be silently persisted again.
+    crate::hotkey::parse_shortcut(&config.hotkey)?;
+
     // 快捷键变更：先注册成功才落盘
     if config.hotkey != old.hotkey {
         crate::hotkey::register_main(&app, &config.hotkey)?;
@@ -91,16 +95,24 @@ pub fn copy_text(text: String) -> Result<(), String> {
 /// 开始捕获新快捷键：挂起全局热键 + 启动原生键盘捕获线程
 /// （网页 keydown 会被输入法/系统热键截胡，必须在物理层捕获）
 #[tauri::command]
-pub fn capture_hotkey_begin(app: AppHandle, state: State<'_, AppState>) {
+pub fn capture_hotkey_begin(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    crate::hotkey::stop_capture(&app);
     crate::hotkey::suspend_main(&app);
     let gen = state.capture_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    crate::hotkey::spawn_capture(&app, gen);
+    if let Err(error) = crate::hotkey::spawn_capture(&app, gen) {
+        state.capture_gen.fetch_add(1, Ordering::SeqCst);
+        crate::hotkey::stop_capture(&app);
+        let _ = crate::hotkey::resume_main(&app);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// 结束捕获（成功/取消/失焦都要调）：停掉捕获线程，按当前配置恢复注册
 #[tauri::command]
 pub fn capture_hotkey_end(app: AppHandle, state: State<'_, AppState>) {
     state.capture_gen.fetch_add(1, Ordering::SeqCst);
+    crate::hotkey::stop_capture(&app);
     if let Err(e) = crate::hotkey::resume_main(&app) {
         tracing::error!("恢复快捷键失败：{e}");
     }

@@ -9,7 +9,7 @@
 //! 取消/新会话会使旧代号作废，从根上杜绝“迟到的结果注入错窗口”。
 
 use parking_lot::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::Shortcut;
@@ -51,6 +51,8 @@ pub struct AppState {
     pub benching: AtomicBool,
     /// 快捷键原生捕获会话代号（换代即停止旧捕获线程）
     pub capture_gen: AtomicU64,
+    /// 捕获钩子的 Windows 线程 ID，0 表示当前没有捕获线程。
+    pub capture_thread_id: AtomicU32,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             main_shortcut: Mutex::new(None),
             benching: AtomicBool::new(false),
             capture_gen: AtomicU64::new(0),
+            capture_thread_id: AtomicU32::new(0),
         }
     }
 }
