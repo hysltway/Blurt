@@ -271,73 +271,29 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     hud::emit_state(app, "listen", None);
     tray::set_tooltip(app, "Blurt · 正在聆听…（Esc 取消）");
 
-    // 静音端点检测（自动停止）：与 HUD 同参的自适应噪声门，
+    // 静音端点检测（自动停止）：原始 RMS 域乘性噪声门（audio::SilenceGate），
     // 纯环境噪音不算有声；仅对切换模式生效（见 auto_stop_session）。
-    // 本底以上次学习结果起步（设备/环境不变时无需重新学习），并周期回写缓存。
+    // 本底种子来自上次学习结果（感知域持久化，换麦克风时 set_config 已重置），
+    // 学习成果每 0.5s 回写，随下次识别后的 save_stats 一并落盘。
     let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
     let level_app = app.clone();
     let done_app = app.clone();
-    let mut vad_floor = state.stats.lock().noise_floor.clamp(0.02, 0.4);
-    let mut voiced_run = 0u32;
-    let mut silent_run = 0u32;
-    let mut heard_speech = false;
-    let mut vad_done = false;
+    let seed = audio::perceptual_to_rms(state.stats.lock().noise_floor.clamp(0.02, 0.4));
+    let mut gate = audio::SilenceGate::new(auto_stop, seed);
+    let vad_t0 = Instant::now();
     let mut vad_tick = 0u32;
-    let mut win_min = 1.0f32;
-    let mut win_count = 0u32;
     let rec = audio::start_recording(
         cfg.mic_device.clone(),
         cfg.max_record_secs,
-        move |v| {
-            hud::emit_level(&level_app, v);
-            if auto_stop <= 0.0 || vad_done {
-                return;
-            }
-            // 本底跟踪：快速下探 / 近本底缓升 / 说话时几乎不动
-            if v < vad_floor {
-                vad_floor += (v - vad_floor) * 0.12;
-            } else if v < vad_floor + 0.10 {
-                vad_floor += (v - vad_floor) * 0.02;
-            } else {
-                vad_floor += 0.0004;
-            }
-            // 冗余再学习：连续 3s 的最低电平都显著高于门限 —— 不是说话
-            //（字间总会回落），是环境整体变吵 → 门限快速上调
-            win_min = win_min.min(v);
-            win_count += 1;
-            if win_count >= 150 {
-                if win_min > vad_floor + 0.05 {
-                    vad_floor += (win_min - vad_floor) * 0.8;
-                }
-                win_min = 1.0;
-                win_count = 0;
-            }
-            vad_floor = vad_floor.clamp(0.02, 0.4);
-            // 每 0.5s 回写学习成果（随下次识别后的 save_stats 一并落盘）
-            vad_tick += 1;
-            if vad_tick % 25 == 0 {
-                level_app.state::<AppState>().stats.lock().noise_floor = vad_floor;
-            }
-
-            if v > vad_floor + 0.07 {
-                voiced_run += 1;
-                silent_run = 0;
-                if voiced_run >= 5 {
-                    heard_speech = true; // ≥100ms 连续有声才算“说过话”
-                }
-            } else {
-                voiced_run = 0;
-                silent_run += 1;
-            }
-            // 说完后静音 auto_stop 秒自动结束；从未开口则多给 2s 宽限后同样结束
-            let limit_s = if heard_speech {
-                auto_stop
-            } else {
-                auto_stop + 2.0
-            };
-            if silent_run >= (limit_s * 50.0) as u32 {
-                vad_done = true;
+        move |rms| {
+            hud::emit_level(&level_app, audio::perceptual_level(rms));
+            if gate.update(rms, vad_t0.elapsed().as_secs_f32()) {
                 auto_stop_session(&level_app, gen);
+            }
+            vad_tick += 1;
+            if auto_stop > 0.0 && vad_tick % 25 == 0 {
+                let mapped = audio::perceptual_level(gate.floor()).clamp(0.02, 0.4);
+                level_app.state::<AppState>().stats.lock().noise_floor = mapped;
             }
         },
         move |res| on_audio_ready(&done_app, gen, res),
