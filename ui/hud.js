@@ -4,7 +4,7 @@
  * 整体形态 = 中央穹顶（两头窄、中间高），峰高由降噪后的实时响度决定；
  * 内部起伏 = 共同的行进大波 + 绸缕分层错相（层次感），响度越大布面张得越开：
  *   listen   聆听中（能量撑开丝波振幅 —— “它听到我了”）
- *   process  识别中（靛紫行波 + 预计进度线 —— “还要多久”）
+ *   process  识别中（双频驻波拍频 + 噪声交错：有节奏但不规整的此起彼伏，色相随进度滑向绿色）
  *   success  完成（丝波收拢成绿色亮线，脉冲）
  *   error    出错（红色高频躁动 + 抖动）
  *   nothing  没听到有效语音（灰色塌陷）
@@ -18,7 +18,7 @@
 
 const W = 360, H = 140;          // 与 Rust 侧窗口尺寸一致（逻辑像素）
 const CX = W / 2;
-const WY = 84;                   // 丝波基线（上方留出峰值与取消按钮空间）
+const WY = 76;                   // 丝波基线（上方留出峰值与取消按钮空间）
 const X0 = 10, BW = W - 20;      // 波形横向范围
 const NS = 60;                   // 绸缕条数（网格的“行”）
 const SEG = 88;                  // 每条绸缕的分段数
@@ -32,7 +32,6 @@ const COL = {
   err:   { deep: [226, 62, 72], light: [255, 152, 152] },  // 错误红
   quiet: { deep: [116, 122, 138], light: [190, 195, 205] },// 静默灰
   amber: { deep: [222, 150, 40], light: [255, 216, 140] }, // 加载琥珀
-  track: 'rgba(255,255,255,0.14)',
 };
 
 const canvas = document.getElementById('c');
@@ -55,10 +54,10 @@ let sinceVoice = 0;
 let noiseFloor = 0.05; // 自适应环境噪声本底（跟踪最小值，跨会话保留）
 let envLevel = 0;      // 起音快/释音慢的包络
 let loud = 0;          // 显示响度（二级慢包络）：决定中央峰高与布面张开程度
+let sessionT0 = 0;     // 会话开始时刻（起始消抖窗口用）
 let flowPhase = 0;     // 布面流动相位（按帧积分；电平抖动不会使噪声场跳变）
 let lastFrameT = 0;
 let etaMs = 1500;
-let progSnap = null;
 let appearT = 0;
 
 const now = () => performance.now() / 1000;
@@ -86,8 +85,8 @@ function silk(u, v, tt) { // -1..1，绸缕分层错相用
   return ((a + b) / 1.42) * 2 - 1;
 }
 function swell(u, tt) { // 共同大波：两个倍频程原地演变（GIF 的 3-5 个波峰节奏）
-  const a = vnoise2(u * 3.2, 3.7 + tt * 0.42);
-  const b = vnoise2(u * 6.4 + 11.3, 8.9 + tt * 0.66) * 0.55;
+  const a = vnoise2(u * 3.2, 3.7 + tt * 0.60);
+  const b = vnoise2(u * 6.4 + 11.3, 8.9 + tt * 0.95) * 0.55;
   return ((a + b) / 1.55) * 2 - 1;
 }
 function weave(u, v, tt) { // 高 v 频细织纹：让每缕在布面内可见地穿插
@@ -98,22 +97,21 @@ function setState(s, payload) {
   const fresh = (state === 'hidden');
   if (s === 'process') {
     etaMs = Math.max(400, (payload && payload.eta_ms) || 1500);
-    progSnap = null;
   }
-  if (s === 'success') progSnap = { from: currentProgress(), t: now() };
   state = s;
   tEnter = now();
   if (fresh) {
     appearT = tEnter;
+    sessionT0 = tEnter;
     rawLevel = 0; envLevel = 0; loud = 0; sinceVoice = 0; // noiseFloor 保留（环境不变）
   }
   if (!running) { running = true; requestAnimationFrame(frame); }
 }
 
-/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行，完成时吸附 100% ---------- */
+/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行（驱动识别中的色相与流速） ---------- */
 let procStart = 0;
 function currentProgress() {
-  if (state !== 'process' && !progSnap) return 0;
+  if (state !== 'process') return 0;
   const t = now() - procStart;
   const raw = t / (etaMs / 1000);
   let p;
@@ -123,15 +121,6 @@ function currentProgress() {
 }
 
 /* ---------- 渲染 ---------- */
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
 
 /* 布面全局平滑量（颜色/振幅/厚度等向状态目标缓动） */
 const band = {
@@ -147,14 +136,19 @@ const strandKick = new Float32Array(NS); // cancel 时每条绸缕的散开速�
  * 环境噪声（风扇/底噪）被门限吃掉，波形只响应真实语音；
  * 起音快（跟手）、释音慢（丝滑收尾），消除逐样本的剧烈抖动。 */
 function pushLevel(v) {
+  // 会话起始消抖：开流瞬间常有爆音/AGC 突跳 —— 前 120ms 静默、随后 300ms 渐入；
+  // 该窗口内本底加速学习，快速锁定当前环境噪声，避免开头大幅乱波
+  const age = sessionT0 ? now() - sessionT0 : 1;
+  const warm = clamp((age - 0.12) / 0.30, 0, 1);
+  const fastLearn = age < 0.30;
   if (v < noiseFloor) noiseFloor += (v - noiseFloor) * 0.12;            // 快速下探
-  else if (v < noiseFloor + 0.10) noiseFloor += (v - noiseFloor) * 0.02; // 近本底缓升
-  else noiseFloor += 0.0004;                                             // 说话时几乎不动
+  else if (v < noiseFloor + 0.10) noiseFloor += (v - noiseFloor) * (fastLearn ? 0.10 : 0.02);
+  else noiseFloor += fastLearn ? (v - noiseFloor) * 0.02 : 0.0004;       // 说话时几乎不动
   noiseFloor = clamp(noiseFloor, 0.02, 0.4);
-  const gated = clamp((v - noiseFloor - 0.07) * 1.35, 0, 1); // 门限抬高：残余噪声不再引起波动
+  const gated = clamp((v - noiseFloor - 0.07) * 1.6, 0, 1) * warm; // 门限之上放大：说话时响应更明显
   envLevel += (gated - envLevel) * (gated > envLevel ? 0.55 : 0.10);
   rawLevel = envLevel;
-  loud += (envLevel - loud) * (envLevel > loud ? 0.35 : 0.055);          // 峰高呼吸感
+  loud += (envLevel - loud) * (envLevel > loud ? 0.5 : 0.12); // 提速：随音节明显呼吸起伏
 }
 
 // 中央穹顶：两头窄、中间高（振幅包络）；厚度衰减更缓，让中段层次可见
@@ -208,7 +202,13 @@ function frame() {
     tAmp = 1; tSpread = 1;
     tAMul = lerp(1, 0.55 + 0.16 * Math.sin(t * 2.6), quiet); // 久无声 → 呼吸提示
   } else if (state === 'process') {
-    tPair = COL.think; tAmp = 1; tSpread = 1;
+    // 无进度条：用色相渐变表达进度 —— 靛紫随完成度滑向绿色，success 时无缝接满绿
+    const p = currentProgress();
+    tPair = {
+      deep: mixCol(COL.think.deep, COL.ok.deep, p * 0.65),
+      light: mixCol(COL.think.light, COL.ok.light, p * 0.65),
+    };
+    tAmp = 1; tSpread = 1;
   } else if (state === 'success') {
     const k = easeOutCubic(clamp(te / 0.22, 0, 1));
     tPair = COL.ok; tAmp = 1 - 0.94 * k; tSpread = 1 - 0.9 * k;
@@ -230,27 +230,33 @@ function frame() {
   band.spread += (tSpread - band.spread) * spd;
   band.aMul += (tAMul - band.aMul) * spd;
 
-  /* --- 布面流动相位：按帧积分（说话越响流得越快），电平抖动只影响流速不瞬移场 --- */
-  flowPhase += dt * (state === 'error' ? 5 : 1 + loud * 1.6);
+  /* --- 布面流动相位：按帧积分（说话越响流得越快；识别中随进度加速） --- */
+  const flowSpd = state === 'error' ? 5
+    : state === 'process' ? 1.7 + currentProgress() * 1.5
+      : 1 + loud * 3.2;
+  flowPhase += dt * flowSpd;
   const noiseT = flowPhase;
 
-  /* --- 中央峰高：实时响度决定“中间有多高”；heightK 控制布面张合（层次开度） --- */
+  /* --- 中央峰高：实时响度决定“中间有多高”；heightK 控制布面张合（层次开度）
+   * sig 混入快包络让音节脉动直接可见；幂次曲线全程不饱和（tanh 会在大声段压平变化） --- */
   let peakAmp;
-  if (state === 'listen') peakAmp = 5 + 27 * Math.tanh(loud * 2.2);
-  else if (state === 'process') peakAmp = 13;
+  if (state === 'listen') {
+    const sig = clamp(0.45 * loud + 0.55 * envLevel, 0, 1);
+    peakAmp = 4 + 44 * Math.pow(sig, 0.7);
+  } else if (state === 'process') peakAmp = 20;
   else if (state === 'error') peakAmp = 10;
   else if (state === 'loading') peakAmp = 5.5 + 2.5 * Math.sin(t * 2.4);
   else peakAmp = 9; // success / nothing / cancel：残余起伏随 band.amp 衰减
-  const heightK = clamp((peakAmp - 5) / 27, 0.10, 1); // 0=安静细线 → 1=全开
+  const heightK = clamp((peakAmp - 4) / 44, 0.10, 1); // 0=安静细线 → 1=全开
 
   /* --- 每列振幅：穹顶包络（两头窄、中间高） --- */
   const colAmp = new Float32Array(SEG + 1);
   for (let i = 0; i <= SEG; i++) {
-    const u = i / SEG;
-    let amp = peakAmp;
-    if (state === 'process') amp = peakAmp + 5 * Math.sin(u * 5.6 - t * 3.2); // 行波脉动
-    colAmp[i] = amp * domeAt(u) * band.amp;
+    colAmp[i] = peakAmp * domeAt(i / SEG) * band.amp;
   }
+
+  /* 识别中：实时噪声波 → 固定节奏驻波的过渡系数 */
+  const procBlend = state === 'process' ? easeOutCubic(clamp(te / 0.4, 0, 1)) : 0;
 
   ctx.save();
   ctx.translate(shakeX, 0);
@@ -263,7 +269,7 @@ function frame() {
   for (let s = 0; s < NS; s++) {
     const v = s / (NS - 1);
     const depth = (v - 0.5) * SPREAD * band.spread;
-    const ampMul = 0.65 + 0.5 * v;                // 行间视差：上层摆幅大，褶皱处绸缕交叉
+    const ampMul = 0.5 + 0.75 * v;                // 行间视差加大：上层摆幅 2.5 倍于底层，交叉更密
     // 深部 → 亮部：中间行更亮（折痕高光集中在中部）
     const cMix = 0.25 + 0.75 * Math.sin(v * Math.PI);
     const col = mixCol(band.deep, band.light, cMix * 0.8);
@@ -276,13 +282,26 @@ function frame() {
       const dome = domeAt(u);
       // 共同大波给出原地上下起伏的主节奏（无横向推移）；
       // 绸缕只小幅错相分层（层次而不散），细织纹随布面张开才显现
-      const common = swell(u, noiseT);
-      const layer = silk(u + v * 0.6, v * 1.2, noiseT) * ampMul; // 层间错相大：各层波峰错开
-      const dy = (common * 0.65 + layer * 0.70) * colAmp[i]
-        + weave(u, v, noiseT) * 3.6 * band.spread * dome * (0.25 + 0.75 * heightK);
+      const layerNoise = silk(u + v * 1.0, v * 1.6, noiseT) * ampMul; // 错相/去相关分层
+      // 识别中：3 弧与 5 弧驻波频率不合拍（4.6 vs 3.1 rad/s）产生拍频 ——
+      // 有节奏但此起彼伏；波腹位置缓慢漂移 + 噪声交错，打破“完美波浪”
+      const procW = () =>
+        (Math.sin(u * Math.PI * 3 + noiseT * 0.18) * Math.sin(t * 4.6 - v * 1.2)
+          + Math.sin(u * Math.PI * 5 - 0.9) * Math.sin(t * 3.1 + 1.1 - v * 0.8) * 0.6)
+        * 0.55 * (0.8 + 0.35 * v)
+        + layerNoise * 0.55;
+      let wave;
+      if (procBlend >= 1) {
+        wave = procW();
+      } else {
+        wave = swell(u, noiseT) * 0.55 + layerNoise * 0.85;
+        if (procBlend > 0) wave = wave * (1 - procBlend) + procW() * procBlend;
+      }
+      const dy = wave * colAmp[i]
+        + weave(u, v, noiseT) * 4.5 * band.spread * dome * (0.25 + 0.75 * heightK);
       px[i] = X0 + u * BW;
-      py[i] = WY + depth * Math.pow(dome, 0.7) * (0.3 + 0.6 * heightK)
-        + clamp(dy, -42, 42) + kick * edgeFade(u);
+      py[i] = WY + depth * Math.pow(dome, 0.7) * (0.25 + 0.75 * heightK)
+        + clamp(dy, -50, 50) + kick * edgeFade(u);
     }
     // 中点二次曲线平滑，单次描边（避免节点重叠产生竖纹）
     ctx.beginPath();
@@ -311,28 +330,6 @@ function frame() {
     ctx.fillStyle = rgba(COL.ok.light, 1);
     ctx.beginPath();
     ctx.arc(CX, WY, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  /* --- 识别进度线（“还要多久”，波面下方悬浮细线） --- */
-  if (state === 'process' || (state === 'success' && progSnap)) {
-    let p;
-    if (state === 'process') p = currentProgress();
-    else {
-      const k = clamp((now() - progSnap.t) / 0.15, 0, 1);
-      p = lerp(progSnap.from, 1, k);
-    }
-    const tw = 170;
-    const tx0 = CX - tw / 2, tyy = 126;
-    ctx.globalAlpha = alpha * 0.9;
-    ctx.fillStyle = COL.track;
-    roundRect(tx0, tyy, tw, 3, 1.5);
-    ctx.fill();
-    const grad = ctx.createLinearGradient(tx0, 0, tx0 + tw, 0);
-    grad.addColorStop(0, '#8f88ff');
-    grad.addColorStop(1, '#4ade80');
-    ctx.fillStyle = grad;
-    roundRect(tx0, tyy, Math.max(3, tw * p), 3, 1.5);
     ctx.fill();
   }
 
