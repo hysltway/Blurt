@@ -22,8 +22,7 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 Set-Location src-tauri
 cargo build --release
 Get-Process Blurt -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 1
-Copy-Item target\release\blurt.exe ..\dist\Blurt.exe -Force
+foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; try { Copy-Item target\release\blurt.exe ..\dist\Blurt.exe -Force -ErrorAction Stop; break } catch {} }
 Start-Process ..\dist\Blurt.exe
 ```
 
@@ -31,7 +30,7 @@ Rebuild notes:
 
 - `frontendDist` is `../ui`, so HTML/CSS/JS changes only take effect in the rebuilt exe.
 - Run cargo from inside `src-tauri`: the required `+crt-static` rustflags live in `src-tauri/.cargo/config.toml`, and cargo discovers that config by working directory.
-- Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file; the 1s pause lets Windows release the image lock), then start the fresh `dist\Blurt.exe` again.
+- Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
 - If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
 
 Worktree hygiene:

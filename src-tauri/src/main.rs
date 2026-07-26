@@ -87,6 +87,7 @@ fn main() {
             commands::capture_hotkey_begin,
             commands::capture_hotkey_end,
             commands::cancel_session,
+            commands::get_noise_floor,
             commands::bench_threads,
         ])
         .setup(move |app| {

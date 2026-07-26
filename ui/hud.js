@@ -55,6 +55,8 @@ let noiseFloor = 0.05; // 自适应环境噪声本底（跟踪最小值，跨会
 let envLevel = 0;      // 起音快/释音慢的包络
 let loud = 0;          // 显示响度（二级慢包络）：决定中央峰高与布面张开程度
 let sessionT0 = 0;     // 会话开始时刻（起始消抖窗口用）
+let winMin = 1;        // 滑动窗最小电平（环境变吵的冗余再学习）
+let winCount = 0;
 let flowPhase = 0;     // 布面流动相位（按帧积分；电平抖动不会使噪声场跳变）
 let lastFrameT = 0;
 let etaMs = 1500;
@@ -104,6 +106,7 @@ function setState(s, payload) {
     appearT = tEnter;
     sessionT0 = tEnter;
     rawLevel = 0; envLevel = 0; loud = 0; sinceVoice = 0; // noiseFloor 保留（环境不变）
+    winMin = 1; winCount = 0;
   }
   if (!running) { running = true; requestAnimationFrame(frame); }
 }
@@ -144,6 +147,13 @@ function pushLevel(v) {
   if (v < noiseFloor) noiseFloor += (v - noiseFloor) * 0.12;            // 快速下探
   else if (v < noiseFloor + 0.10) noiseFloor += (v - noiseFloor) * (fastLearn ? 0.10 : 0.02);
   else noiseFloor += fastLearn ? (v - noiseFloor) * 0.02 : 0.0004;       // 说话时几乎不动
+  // 冗余再学习：连续 3s 的最低电平都显著高于门限 —— 不是说话（字间总会回落），
+  // 是环境整体变吵 → 门限快速上调
+  winMin = Math.min(winMin, v);
+  if (++winCount >= 150) {
+    if (winMin > noiseFloor + 0.05) noiseFloor += (winMin - noiseFloor) * 0.8;
+    winMin = 1; winCount = 0;
+  }
   noiseFloor = clamp(noiseFloor, 0.02, 0.4);
   const gated = clamp((v - noiseFloor - 0.07) * 1.6, 0, 1) * warm; // 门限之上放大：说话时响应更明显
   envLevel += (gated - envLevel) * (gated > envLevel ? 0.55 : 0.10);
@@ -341,6 +351,11 @@ function frame() {
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 const closeBtn = document.getElementById('closeBtn');
+
+// 启动即读取上次学习的环境本底（设备/环境不变则直接复用，重启后也无需重新学习）
+invoke('get_noise_floor').then(v => {
+  if (typeof v === 'number' && isFinite(v)) noiseFloor = clamp(v, 0.02, 0.4);
+}).catch(() => {});
 
 listen('hud:state', e => {
   const s = e.payload.state;

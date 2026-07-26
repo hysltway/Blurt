@@ -44,6 +44,13 @@ pub fn set_config(
         crate::tray::sync_autostart(config.autostart);
     }
 
+    // 换麦克风：缓存的噪声本底不再适用，重置后重新学习
+    if config.mic_device != old.mic_device {
+        let mut stats = state.stats.lock();
+        stats.noise_floor = config::Stats::default().noise_floor;
+        config::save_stats(&stats);
+    }
+
     *state.config.write() = config.clone();
     config::save(&config).map_err(|e| format!("保存配置失败：{e}"))?;
 
@@ -122,6 +129,12 @@ pub fn capture_hotkey_end(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 pub fn cancel_session(app: AppHandle) {
     crate::app::esc_pressed(&app);
+}
+
+/// HUD 启动时读取缓存的环境噪声本底（跨重启复用，免去每次学习过程）
+#[tauri::command]
+pub fn get_noise_floor(state: State<'_, AppState>) -> f32 {
+    state.stats.lock().noise_floor
 }
 
 fn pick_test_wav(dir: &Path) -> Option<PathBuf> {

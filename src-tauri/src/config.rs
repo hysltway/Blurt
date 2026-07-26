@@ -106,7 +106,7 @@ pub fn save(c: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 运行期统计（用于 HUD 进度预测），跨会话持久化
+/// 运行期统计（用于 HUD 进度预测与降噪本底复用），跨会话持久化
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Stats {
@@ -114,6 +114,9 @@ pub struct Stats {
     pub rtf_ema: f32,
     /// 最近一次识别耗时（毫秒）
     pub last_ms: Option<u64>,
+    /// 学习到的环境噪声本底（设备与环境不变则可复用，免去每次会话重新学习；
+    /// 换麦克风时重置，会话内仍自适应微调）
+    pub noise_floor: f32,
 }
 
 impl Default for Stats {
@@ -121,6 +124,7 @@ impl Default for Stats {
         Self {
             rtf_ema: 0.16,
             last_ms: None,
+            noise_floor: 0.05,
         }
     }
 }

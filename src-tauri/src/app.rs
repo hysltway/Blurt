@@ -273,14 +273,18 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
 
     // 静音端点检测（自动停止）：与 HUD 同参的自适应噪声门，
     // 纯环境噪音不算有声；仅对切换模式生效（见 auto_stop_session）。
+    // 本底以上次学习结果起步（设备/环境不变时无需重新学习），并周期回写缓存。
     let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
     let level_app = app.clone();
     let done_app = app.clone();
-    let mut vad_floor = 0.05f32;
+    let mut vad_floor = state.stats.lock().noise_floor.clamp(0.02, 0.4);
     let mut voiced_run = 0u32;
     let mut silent_run = 0u32;
     let mut heard_speech = false;
     let mut vad_done = false;
+    let mut vad_tick = 0u32;
+    let mut win_min = 1.0f32;
+    let mut win_count = 0u32;
     let rec = audio::start_recording(
         cfg.mic_device.clone(),
         cfg.max_record_secs,
@@ -297,7 +301,23 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
             } else {
                 vad_floor += 0.0004;
             }
+            // 冗余再学习：连续 3s 的最低电平都显著高于门限 —— 不是说话
+            //（字间总会回落），是环境整体变吵 → 门限快速上调
+            win_min = win_min.min(v);
+            win_count += 1;
+            if win_count >= 150 {
+                if win_min > vad_floor + 0.05 {
+                    vad_floor += (win_min - vad_floor) * 0.8;
+                }
+                win_min = 1.0;
+                win_count = 0;
+            }
             vad_floor = vad_floor.clamp(0.02, 0.4);
+            // 每 0.5s 回写学习成果（随下次识别后的 save_stats 一并落盘）
+            vad_tick += 1;
+            if vad_tick % 25 == 0 {
+                level_app.state::<AppState>().stats.lock().noise_floor = vad_floor;
+            }
 
             if v > vad_floor + 0.07 {
                 voiced_run += 1;
