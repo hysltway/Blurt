@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="color-scheme" content="light" />
+<link rel="icon" href="data:," />
+<title>Blurt 设置</title>
+<link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+<header>
+  <h1>Blurt</h1>
+  <span class="sub">完全离线的语音输入 · 数据不出本机</span>
+</header>
+
+<main>
+  <!-- 快捷键与输入 -->
+  <section class="card">
+    <h2>快捷键与输入</h2>
+    <div class="row">
+      <label>全局快捷键<span class="desc">在任何应用里按下即可开始说话</span></label>
+      <div class="hotkey-box" id="hotkeyBox" tabindex="0">—</div>
+    </div>
+    <div class="row">
+      <label>文本注入方式<span class="desc">识别结果写入光标处的方式</span></label>
+      <select id="injectMode">
+        <option value="auto">智能（推荐）</option>
+        <option value="type">模拟键入</option>
+        <option value="paste">剪贴板粘贴</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>开机自启动</label>
+      <div class="switch">
+        <input type="checkbox" id="autostart" />
+        <label class="slider" for="autostart"></label>
+      </div>
+    </div>
+    <div class="hint">
+      <kbd>按住</kbd> 快捷键说话，松开即出字；<kbd>轻点</kbd> 一下切换 开始 / 停止；录音中按 <kbd>Esc</kbd> 取消。
+    </div>
+  </section>
+
+  <!-- 语音 -->
+  <section class="card">
+    <h2>语音</h2>
+    <div class="row">
+      <label>麦克风</label>
+      <select id="micDevice"><option value="">系统默认</option></select>
+    </div>
+    <div class="row">
+      <label>最长录音时长<span class="desc">超时后自动开始识别</span></label>
+      <div class="range-wrap">
+        <input type="range" id="maxRecord" min="30" max="180" step="15" />
+        <span class="val" id="maxRecordVal">120 秒</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 识别引擎 -->
+  <section class="card">
+    <h2>识别引擎 · Qwen3-ASR-0.6B</h2>
+    <div class="model-status">
+      <span class="dot missing" id="modelDot"></span>
+      <div>
+        <div id="modelText">正在检查模型…</div>
+        <div class="path" id="modelPath"></div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="btnReload">重新加载</button>
+      <button class="btn" id="btnOpenModelDir">打开模型目录</button>
+      <button class="btn primary" id="btnCopyCmd" style="display:none">复制下载命令</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>推理线程<span class="desc">自动 = 按 CPU 核心数选择</span></label>
+      <select id="numThreads">
+        <option value="0">自动</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="8">8</option>
+        <option value="12">12</option>
+      </select>
+    </div>
+    <div class="row col">
+      <label>线程测速<span class="desc">在本机依次实测各线程数的识别速度（约半分钟，期间 CPU 占用较高）</span></label>
+      <div class="btn-row" style="margin-top:0">
+        <button class="btn" id="btnBench">一键测速</button>
+        <button class="btn primary" id="btnApplyBest" style="display:none"></button>
+      </div>
+      <div class="desc" id="benchStatus" style="color:var(--text-3)"></div>
+      <table id="benchTable" style="display:none"></table>
+    </div>
+    <div class="row col">
+      <label>热词<span class="desc">易被听错的专有名词，用逗号分隔，可显著提升准确率</span></label>
+      <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, rebase, PR"></textarea>
+    </div>
+  </section>
+
+  <!-- 关于 -->
+  <section class="card">
+    <h2>关于</h2>
+    <div class="about">
+      Blurt v0.1.0 — 按下快捷键，说出想法，文字落进光标。<br />
+      完全离线运行，无任何网络请求，语音与文本永不离开这台电脑。
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="btnOpenLogs">打开日志目录</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="settings.js"></script>
+</body>
+</html>

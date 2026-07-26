@@ -1,0 +1,4 @@
+# sherpa-onnx 预编译静态库为 /MT（静态 CRT），Rust 侧必须一致，否则链接冲突。
+# Tauri 官方亦推荐 Windows 下静态 CRT（免装 VC 运行库）。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

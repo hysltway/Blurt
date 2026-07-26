@@ -1,0 +1,190 @@
+//! 设置页 / HUD 调用的 Tauri 命令。
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
+
+use crate::app::AppState;
+use crate::config::{self, Config};
+
+#[tauri::command]
+pub fn get_config(state: State<'_, AppState>) -> Config {
+    state.config.read().clone()
+}
+
+#[tauri::command]
+pub fn set_config(app: AppHandle, state: State<'_, AppState>, config: Config) -> Result<(), String> {
+    let old = state.config.read().clone();
+
+    // 快捷键变更：先注册成功才落盘
+    if config.hotkey != old.hotkey {
+        crate::hotkey::register_main(&app, &config.hotkey)?;
+    }
+
+    // 开机自启
+    if config.autostart != old.autostart {
+        let al = app.autolaunch();
+        let r = if config.autostart { al.enable() } else { al.disable() };
+        if let Err(e) = r {
+            return Err(format!("设置开机自启失败:{e}"));
+        }
+        crate::tray::sync_autostart(config.autostart);
+    }
+
+    *state.config.write() = config.clone();
+    config::save(&config).map_err(|e| format!("保存配置失败：{e}"))?;
+
+    // 引擎相关变更 → 后台重载
+    if config.num_threads != old.num_threads
+        || config.hotwords != old.hotwords
+        || config.model_dir != old.model_dir
+    {
+        crate::app::spawn_engine_load(&app, false);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_input_devices() -> Vec<String> {
+    crate::audio::list_input_devices()
+}
+
+#[tauri::command]
+pub fn engine_status(app: AppHandle) -> serde_json::Value {
+    crate::app::engine_status_dto(&app)
+}
+
+#[tauri::command]
+pub fn reload_engine(app: AppHandle) {
+    crate::app::spawn_engine_load(&app, false);
+}
+
+#[tauri::command]
+pub fn open_model_dir(state: State<'_, AppState>) {
+    let cfg = state.config.read().clone();
+    let dir = config::resolve_model_dir(&cfg).unwrap_or_else(config::models_root);
+    let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+}
+
+#[tauri::command]
+pub fn open_log_dir() {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(config::logs_dir())
+        .spawn();
+}
+
+#[tauri::command]
+pub fn copy_text(text: String) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.set_text(text).map_err(|e| e.to_string())
+}
+
+/// 开始捕获新快捷键：挂起全局热键 + 启动原生键盘捕获线程
+/// （网页 keydown 会被输入法/系统热键截胡，必须在物理层捕获）
+#[tauri::command]
+pub fn capture_hotkey_begin(app: AppHandle, state: State<'_, AppState>) {
+    crate::hotkey::suspend_main(&app);
+    let gen = state.capture_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::hotkey::spawn_capture(&app, gen);
+}
+
+/// 结束捕获（成功/取消/失焦都要调）：停掉捕获线程，按当前配置恢复注册
+#[tauri::command]
+pub fn capture_hotkey_end(app: AppHandle, state: State<'_, AppState>) {
+    state.capture_gen.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = crate::hotkey::resume_main(&app) {
+        tracing::error!("恢复快捷键失败：{e}");
+    }
+}
+
+/// HUD ✕ 按钮：取消当前会话（与 Esc 同路径）
+#[tauri::command]
+pub fn cancel_session(app: AppHandle) {
+    crate::app::esc_pressed(&app);
+}
+
+fn pick_test_wav(dir: &Path) -> Option<PathBuf> {
+    let tw = dir.join("test_wavs");
+    for n in ["codeswitch.wav", "zh.wav", "en.wav"] {
+        let p = tw.join(n);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    std::fs::read_dir(&tw).ok()?.flatten().find_map(|e| {
+        let p = e.path();
+        (p.extension()? == "wav").then_some(p)
+    })
+}
+
+/// 一键测速：依次以不同线程数 加载→识别 同一段音频，量化线程数收益。
+/// 进度经 `bench:progress` / `bench:result` / `bench:done` 事件推送。
+#[tauri::command]
+pub fn bench_threads(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state.benching.swap(true, Ordering::SeqCst) {
+        return Err("测速已在进行中".into());
+    }
+    let cfg = state.config.read().clone();
+    let Some(dir) = config::resolve_model_dir(&cfg) else {
+        state.benching.store(false, Ordering::SeqCst);
+        return Err("未找到模型，无法测速".into());
+    };
+    let Some(wav) = pick_test_wav(&dir) else {
+        state.benching.store(false, Ordering::SeqCst);
+        return Err("模型目录缺少 test_wavs 测试音频".into());
+    };
+
+    std::thread::spawn(move || {
+        let done = |app: &AppHandle| {
+            app.state::<AppState>().benching.store(false, Ordering::SeqCst);
+        };
+        let samples = match crate::audio::read_wav_16k_mono(&wav.to_string_lossy()) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = app.emit("bench:done", serde_json::json!({ "best": 0, "error": e }));
+                done(&app);
+                return;
+            }
+        };
+        let dur_s = samples.len() as f64 / crate::audio::TARGET_SR as f64;
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let mut cands: Vec<usize> = [2usize, 4, 8, 12].iter().copied().filter(|&t| t <= cores).collect();
+        if cands.is_empty() {
+            cands.push(cores.max(1));
+        }
+        let total = cands.len();
+        let mut results: Vec<(usize, f64)> = vec![];
+        for (i, &t) in cands.iter().enumerate() {
+            let _ = app.emit(
+                "bench:progress",
+                serde_json::json!({ "threads": t, "idx": i + 1, "total": total }),
+            );
+            match crate::asr::bench_once(&dir, t, &samples) {
+                Ok(ms) => {
+                    tracing::info!("测速 {t} 线程：{ms:.0}ms (RTF {:.3})", ms / 1000.0 / dur_s);
+                    results.push((t, ms));
+                    let _ = app.emit(
+                        "bench:result",
+                        serde_json::json!({ "threads": t, "ms": ms, "rtf": ms / 1000.0 / dur_s }),
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("测速 {t} 线程失败：{e:#}");
+                    let _ = app.emit(
+                        "bench:result",
+                        serde_json::json!({ "threads": t, "error": format!("{e:#}") }),
+                    );
+                }
+            }
+        }
+        let best = results
+            .iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|r| r.0)
+            .unwrap_or(0);
+        let _ = app.emit("bench:done", serde_json::json!({ "best": best }));
+        done(&app);
+    });
+    Ok(())
+}

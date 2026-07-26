@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Blurt HUD and settings windows",
+  "windows": ["hud", "settings"],
+  "permissions": ["core:default"]
+}
