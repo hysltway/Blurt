@@ -118,11 +118,17 @@ pub fn spawn_engine_load(app: &AppHandle, open_settings_if_missing: bool) {
         let t0 = Instant::now();
         match asr::AsrEngine::load(&dir, cfg.num_threads, &cfg.hotwords) {
             Ok(engine) => {
-                engine.warmup();
-                tracing::info!("模型就绪，耗时 {:.1}s", t0.elapsed().as_secs_f64());
-                *state.engine.write() = EngineSlot::Ready(std::sync::Arc::new(engine));
+                let engine = std::sync::Arc::new(engine);
+                // 先发布 Ready 再热身：用户立刻可以按键说话；若首次识别抢在
+                // 热身完成前到来，只是在引擎锁上排队，总耗时不变。
+                *state.engine.write() = EngineSlot::Ready(engine.clone());
                 emit_engine_status(&app);
                 tray::set_tooltip(&app, "Blurt · 就绪（按下快捷键说话）");
+                tracing::info!(
+                    "模型就绪，耗时 {:.1}s（后台热身中）",
+                    t0.elapsed().as_secs_f64()
+                );
+                engine.warmup();
             }
             Err(e) => {
                 tracing::error!("模型加载失败：{e:#}");
@@ -334,7 +340,7 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
         }
     };
 
-    let speech = audio::trim_silence(&samples);
+    let speech = audio::trim_silence(samples);
     let speech_s = speech.len() as f32 / TARGET_SR_F;
     if speech_s < MIN_SPEECH_S {
         // 没听到有效语音：灰色塌陷提示，而非报错
@@ -362,7 +368,6 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
 
     let app = app.clone();
     std::thread::spawn(move || {
-        let t0 = Instant::now();
         let result = engine.transcribe(&speech);
         let state = app.state::<AppState>();
 
@@ -373,15 +378,15 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
 
         match result {
             Ok((text, elapsed)) => {
-                // 更新 RTF 滑动平均，供下次预测
-                {
+                // 更新 RTF 滑动平均，供下次预测（落盘与广播挪到注入之后：
+                // %APPDATA% 写盘可能被实时防护放大到几十毫秒，不该挡住上屏）
+                let stats_now = {
                     let mut stats = state.stats.lock();
                     let rtf = (elapsed / speech_s as f64) as f32;
                     stats.rtf_ema = (stats.rtf_ema * 0.7 + rtf * 0.3).clamp(0.02, 2.0);
                     stats.last_ms = Some((elapsed * 1000.0) as u64);
-                    config::save_stats(&stats);
-                }
-                emit_engine_status(&app);
+                    *stats
+                };
                 tracing::info!(
                     "识别完成 {:.2}s（音频 {:.2}s）：{}",
                     elapsed,
@@ -392,29 +397,30 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
                 if text.is_empty() {
                     hud::emit_state(&app, "nothing", None);
                     finish_session(&app, gen, 900, "Blurt · 就绪（按下快捷键说话）");
-                    return;
+                } else {
+                    let cfg = state.config.read().clone();
+                    match inject::inject(&text, &cfg.inject_mode, cfg.type_threshold) {
+                        Ok(()) => {
+                            hud::emit_state(&app, "success", None);
+                            finish_session(&app, gen, 650, "Blurt · 就绪（按下快捷键说话）");
+                        }
+                        Err(e) => {
+                            tracing::error!("注入失败：{e}（已复制到剪贴板兜底）");
+                            // 兜底：至少把文本放进剪贴板
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(text);
+                            }
+                            hud::emit_state(&app, "error", None);
+                            finish_session(&app, gen, 1100, "Blurt · 注入失败，文本已在剪贴板");
+                        }
+                    }
                 }
 
-                let cfg = state.config.read().clone();
-                match inject::inject(&text, &cfg.inject_mode, cfg.type_threshold) {
-                    Ok(()) => {
-                        hud::emit_state(&app, "success", None);
-                        finish_session(&app, gen, 650, "Blurt · 就绪（按下快捷键说话）");
-                    }
-                    Err(e) => {
-                        tracing::error!("注入失败：{e}（已复制到剪贴板兜底）");
-                        // 兜底：至少把文本放进剪贴板
-                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                            let _ = cb.set_text(text);
-                        }
-                        hud::emit_state(&app, "error", None);
-                        finish_session(&app, gen, 1100, "Blurt · 注入失败，文本已在剪贴板");
-                    }
-                }
+                config::save_stats(&stats_now);
+                emit_engine_status(&app);
             }
             Err(e) => {
                 tracing::error!("识别失败：{e:#}");
-                let _ = t0;
                 hud::emit_state(&app, "error", None);
                 finish_session(&app, gen, 1100, "Blurt · 识别失败");
             }

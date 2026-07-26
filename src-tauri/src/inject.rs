@@ -78,13 +78,17 @@ pub fn wait_modifiers_released(timeout_ms: u64) {
 
 fn type_text(text: &str) -> Result<(), String> {
     let units: Vec<u16> = text.encode_utf16().collect();
-    for chunk in units.chunks(24) {
+    let mut chunks = units.chunks(24).peekable();
+    while let Some(chunk) = chunks.next() {
         let mut inputs: Vec<INPUT> = Vec::with_capacity(chunk.len() * 2);
         for &u in chunk {
             inputs.extend_from_slice(&unicode_pair(u));
         }
         send(&inputs)?;
-        sleep(Duration::from_millis(3));
+        // 给目标应用留消化时间；最后一批之后无需再等
+        if chunks.peek().is_some() {
+            sleep(Duration::from_millis(3));
+        }
     }
     Ok(())
 }
@@ -94,17 +98,22 @@ fn paste_text(text: &str) -> Result<(), String> {
     let old = cb.get_text().ok();
     cb.set_text(text.to_string())
         .map_err(|e| format!("写入剪贴板失败：{e}"))?;
-    sleep(Duration::from_millis(60));
+    // SetClipboardData 同步生效；30ms 只为躲开剪贴板监听器的抢占窗口
+    sleep(Duration::from_millis(30));
 
     let vk_v = VIRTUAL_KEY(0x56);
     send(&[key_down(VK_CONTROL), key_down(vk_v)])?;
     sleep(Duration::from_millis(25));
     send(&[key_up(vk_v), key_up(VK_CONTROL)])?;
 
-    // 给目标应用留出读剪贴板的时间，再恢复原内容
+    // 恢复原剪贴板挪到后台：等目标应用读完再还原，不阻塞本次会话收尾
     if let Some(old) = old {
-        sleep(Duration::from_millis(400));
-        let _ = cb.set_text(old);
+        std::thread::spawn(move || {
+            sleep(Duration::from_millis(400));
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(old);
+            }
+        });
     }
     Ok(())
 }

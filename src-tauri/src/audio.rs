@@ -1,13 +1,21 @@
 //! 录音管线：cpal 采集（任意采样率/声道）→ 单声道 f32 → 16kHz 重采样 → 静音裁剪
 //! 采集线程实时回报 RMS 电平（驱动 HUD 声波条）。
+//! 重采样在录音期间随录随做（StreamResampler 增量喂入），松开按键时只需冲洗
+//! 不足一块的尾巴——识别开始前的收尾延迟从 O(录音时长) 降为常数。
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Sender};
 use parking_lot::Mutex;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const TARGET_SR: u32 = 16000;
+
+/// SincFixedIn 的固定输入块大小（源采样率下的样本数）
+const RS_CHUNK: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StopMode {
@@ -35,7 +43,112 @@ pub fn list_input_devices() -> Vec<String> {
     }
 }
 
-/// 启动录音线程。`on_level` 约 30Hz 回调电平 [0,1]；
+/* ---------------- 流式重采样 ---------------- */
+
+enum ResamplerKind {
+    /// 源已是 16kHz，直通
+    Passthrough,
+    Sinc(SincFixedIn<f32>),
+    /// rubato 初始化失败：攒下原始样本，finish 时线性重采样兜底
+    LinearFallback(u32),
+}
+
+/// 任意采样率单声道 → 16kHz，支持增量喂入：
+/// 录音期间每个 tick push 一批，finish() 冲洗 sinc 尾部并交出全部输出。
+struct StreamResampler {
+    kind: ResamplerKind,
+    /// 不足一个 chunk 的输入余量（LinearFallback 下攒全部输入）
+    pending: Vec<f32>,
+    out: Vec<f32>,
+    /// 复用的输出缓冲，避免每个 chunk 都分配
+    outbuf: Vec<Vec<f32>>,
+    /// 是否喂过样本（从未喂过则 finish 不冲洗，避免凭空输出延迟线里的零）
+    fed: bool,
+}
+
+impl StreamResampler {
+    fn new(sr: u32) -> Self {
+        let (kind, outbuf) = if sr == TARGET_SR {
+            (ResamplerKind::Passthrough, vec![])
+        } else {
+            let params = SincInterpolationParameters {
+                sinc_len: 128,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Linear,
+                oversampling_factor: 128,
+                window: WindowFunction::BlackmanHarris2,
+            };
+            match SincFixedIn::<f32>::new(TARGET_SR as f64 / sr as f64, 2.0, params, RS_CHUNK, 1) {
+                Ok(rs) => {
+                    let cap = rs.output_frames_max();
+                    (ResamplerKind::Sinc(rs), vec![vec![0.0f32; cap]])
+                }
+                Err(_) => (ResamplerKind::LinearFallback(sr), vec![]),
+            }
+        };
+        Self {
+            kind,
+            pending: Vec::new(),
+            out: Vec::new(),
+            outbuf,
+            fed: false,
+        }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+        self.fed = true;
+        match &mut self.kind {
+            ResamplerKind::Passthrough => self.out.extend_from_slice(samples),
+            ResamplerKind::LinearFallback(_) => self.pending.extend_from_slice(samples),
+            ResamplerKind::Sinc(rs) => {
+                self.pending.extend_from_slice(samples);
+                let mut consumed = 0;
+                while self.pending.len() - consumed >= RS_CHUNK {
+                    let input = [&self.pending[consumed..consumed + RS_CHUNK]];
+                    if let Ok((_, n)) = rs.process_into_buffer(&input[..], &mut self.outbuf, None) {
+                        self.out.extend_from_slice(&self.outbuf[0][..n]);
+                    }
+                    consumed += RS_CHUNK;
+                }
+                if consumed > 0 {
+                    self.pending.drain(..consumed);
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<f32> {
+        match &mut self.kind {
+            ResamplerKind::Passthrough => {}
+            ResamplerKind::LinearFallback(sr) => return linear_resample(&self.pending, *sr),
+            ResamplerKind::Sinc(rs) => {
+                if !self.fed {
+                    return Vec::new();
+                }
+                if !self.pending.is_empty() {
+                    let input = [&self.pending[..]];
+                    if let Ok((_, n)) =
+                        rs.process_partial_into_buffer(Some(&input[..]), &mut self.outbuf, None)
+                    {
+                        self.out.extend_from_slice(&self.outbuf[0][..n]);
+                    }
+                }
+                let flush: Option<&[&[f32]]> = None;
+                if let Ok((_, n)) = rs.process_partial_into_buffer(flush, &mut self.outbuf, None) {
+                    self.out.extend_from_slice(&self.outbuf[0][..n]);
+                }
+            }
+        }
+        self.out
+    }
+}
+
+/* ---------------- 录音 ---------------- */
+
+/// 启动录音线程。`on_level` 约 50Hz 回调电平 [0,1]；
 /// `on_done` 仅在 Finish（含超时自动结束）时回调，交付 16kHz 单声道样本。
 pub fn start_recording(
     device_name: Option<String>,
@@ -74,26 +187,23 @@ pub fn start_recording(
             let sample_format = sup.sample_format();
             let config: cpal::StreamConfig = sup.into();
 
-            // 采集缓冲（已混为单声道，原始采样率）
+            // 采集缓冲（已混为单声道，原始采样率）。实时回调只做 push；
+            // 电平计算与重采样都在本线程的 20ms tick 里，回调保持轻量。
+            // 缓冲经双缓冲交换每 tick 清空，容量稳定在积压峰值后不再分配。
             let buf: Arc<Mutex<Vec<f32>>> =
-                Arc::new(Mutex::new(Vec::with_capacity(sr as usize * 32)));
-            let level_acc: Arc<Mutex<(f64, u64)>> = Arc::new(Mutex::new((0.0, 0))); // (平方和, 样本数)
+                Arc::new(Mutex::new(Vec::with_capacity(sr as usize / 4)));
 
             // 注意：Arc 必须以宏参数传入（宏体内的自由标识符按定义处解析，
             // 会捕获外层原始 Arc 而非闭包内的克隆）。
             macro_rules! push_frames {
-                ($buf:expr, $acc:expr, $data:expr, $channels:expr, $to_f32:expr) => {{
+                ($buf:expr, $data:expr, $channels:expr, $to_f32:expr) => {{
                     let mut b = $buf.lock();
-                    let mut acc = $acc.lock();
                     for frame in $data.chunks($channels) {
                         let mut s = 0.0f32;
                         for v in frame {
                             s += $to_f32(*v);
                         }
-                        s /= $channels as f32;
-                        b.push(s);
-                        acc.0 += (s as f64) * (s as f64);
-                        acc.1 += 1;
+                        b.push(s / $channels as f32);
                     }
                 }};
             }
@@ -109,11 +219,10 @@ pub fn start_recording(
             let stream = match sample_format {
                 cpal::SampleFormat::F32 => {
                     let b = buf.clone();
-                    let a = level_acc.clone();
                     device.build_input_stream(
                         &config,
                         move |data: &[f32], _| {
-                            push_frames!(b, a, data, channels, |v: f32| v);
+                            push_frames!(b, data, channels, |v: f32| v);
                         },
                         err_cb,
                         None,
@@ -121,11 +230,10 @@ pub fn start_recording(
                 }
                 cpal::SampleFormat::I16 => {
                     let b = buf.clone();
-                    let a = level_acc.clone();
                     device.build_input_stream(
                         &config,
                         move |data: &[i16], _| {
-                            push_frames!(b, a, data, channels, |v: i16| v as f32 / 32768.0);
+                            push_frames!(b, data, channels, |v: i16| v as f32 / 32768.0);
                         },
                         err_cb,
                         None,
@@ -133,11 +241,10 @@ pub fn start_recording(
                 }
                 cpal::SampleFormat::U16 => {
                     let b = buf.clone();
-                    let a = level_acc.clone();
                     device.build_input_stream(
                         &config,
                         move |data: &[u16], _| {
-                            push_frames!(b, a, data, channels, |v: u16| (v as f32 - 32768.0)
+                            push_frames!(b, data, channels, |v: u16| (v as f32 - 32768.0)
                                 / 32768.0);
                         },
                         err_cb,
@@ -161,7 +268,12 @@ pub fn start_recording(
                 return;
             }
 
-            // 主循环：等停止信号，同时每 20ms 上报一次真实电平（驱动 HUD 波形滚动）
+            // 流式重采样器：录音过程中增量处理，结束时只剩尾部冲洗
+            let mut rs = StreamResampler::new(sr);
+            // 与 buf 同容量：交换进回调侧后无需再扩容
+            let mut spare: Vec<f32> = Vec::with_capacity(sr as usize / 4);
+
+            // 主循环：等停止信号，同时每 20ms 取走积压样本 → 报电平 → 增量重采样
             let mode = loop {
                 match stop_rx.recv_timeout(Duration::from_millis(20)) {
                     Ok(m) => break m,
@@ -171,17 +283,15 @@ pub fn start_recording(
                             on_done(Err(e));
                             return;
                         }
-                        let (sq, n) = {
-                            let mut acc = level_acc.lock();
-                            let v = *acc;
-                            *acc = (0.0, 0);
-                            v
-                        };
-                        if n > 0 {
-                            let rms = (sq / n as f64).sqrt() as f32;
+                        // 双缓冲交换：临界区只有一次指针交换，spare 容量跨 tick 复用
+                        std::mem::swap(&mut *buf.lock(), &mut spare);
+                        if !spare.is_empty() {
+                            let sq: f64 = spare.iter().map(|&s| s as f64 * s as f64).sum();
+                            let rms = (sq / spare.len() as f64).sqrt() as f32;
                             // 感知化映射：人声 RMS 动态范围压缩到 0..1
-                            let v = (rms * 11.0).powf(0.65).min(1.0);
-                            on_level(v);
+                            on_level((rms * 11.0).powf(0.65).min(1.0));
+                            rs.push(&spare);
+                            spare.clear();
                         }
                         if started.elapsed().as_secs() >= max_secs {
                             break StopMode::Finish; // 超时自动结束
@@ -196,8 +306,10 @@ pub fn start_recording(
                 return;
             }
 
-            let raw = std::mem::take(&mut *buf.lock());
-            on_done(Ok(to_16k(&raw, sr)));
+            // 冲洗停止信号到达前最后未处理的余量
+            let tail = std::mem::take(&mut *buf.lock());
+            rs.push(&tail);
+            on_done(Ok(rs.finish()));
         })
         .map_err(|e| format!("无法创建录音线程：{e}"))?;
 
@@ -228,50 +340,19 @@ pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>, String> {
 
 /// 单声道任意采样率 → 16kHz（rubato sinc 重采样）
 pub fn to_16k(mono: &[f32], sr: u32) -> Vec<f32> {
-    if sr == TARGET_SR || mono.is_empty() {
+    if sr == TARGET_SR {
         return mono.to_vec();
     }
-    use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-    };
-    let params = SincInterpolationParameters {
-        sinc_len: 128,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 128,
-        window: WindowFunction::BlackmanHarris2,
-    };
-    let chunk = 1024usize;
-    let mut rs = match SincFixedIn::<f32>::new(TARGET_SR as f64 / sr as f64, 2.0, params, chunk, 1)
-    {
-        Ok(r) => r,
-        Err(_) => return linear_resample(mono, sr),
-    };
-    let mut out: Vec<f32> = Vec::with_capacity(mono.len() * TARGET_SR as usize / sr as usize + 16);
-    let mut inbuf = vec![vec![0.0f32; chunk]];
-    let mut pos = 0usize;
-    while pos + chunk <= mono.len() {
-        inbuf[0].copy_from_slice(&mono[pos..pos + chunk]);
-        if let Ok(o) = rs.process(&inbuf, None) {
-            out.extend_from_slice(&o[0]);
-        }
-        pos += chunk;
-    }
-    let rest = &mono[pos..];
-    if !rest.is_empty() {
-        let tail = vec![rest.to_vec()];
-        if let Ok(o) = rs.process_partial(Some(&tail), None) {
-            out.extend_from_slice(&o[0]);
-        }
-    }
-    if let Ok(o) = rs.process_partial::<Vec<f32>>(None, None) {
-        out.extend_from_slice(&o[0]);
-    }
-    out
+    let mut rs = StreamResampler::new(sr);
+    rs.push(mono);
+    rs.finish()
 }
 
 /// 兜底线性重采样（仅在 rubato 初始化失败时使用）
 fn linear_resample(mono: &[f32], sr: u32) -> Vec<f32> {
+    if mono.is_empty() {
+        return vec![];
+    }
     let ratio = sr as f64 / TARGET_SR as f64;
     let n = (mono.len() as f64 / ratio) as usize;
     (0..n)
@@ -298,19 +379,20 @@ pub fn interleaved_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-/// 裁掉首尾静音（保留 pad），全静音则返回空
-pub fn trim_silence(samples: &[f32]) -> Vec<f32> {
+/// 裁掉首尾静音（保留 pad），全静音则返回空。
+/// 接管所有权原地裁剪，避免对整段音频再做一次分配拷贝。
+pub fn trim_silence(mut samples: Vec<f32>) -> Vec<f32> {
     const FRAME: usize = 320; // 20ms @16k
     const PAD_FRAMES: usize = 8; // 160ms
     if samples.len() < FRAME * 4 {
-        return vec![];
+        return Vec::new();
     }
     let energies: Vec<f32> = samples
         .chunks(FRAME)
         .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt())
         .collect();
     let mut sorted = energies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b)); // total_cmp：NaN 样本不会引发 panic
     let floor = sorted[sorted.len() / 10]; // 10 分位当噪声地板
     let thresh = (floor * 3.0).max(0.004);
     let first = energies.iter().position(|&e| e > thresh);
@@ -319,8 +401,85 @@ pub fn trim_silence(samples: &[f32]) -> Vec<f32> {
         (Some(f), Some(l)) if l >= f => {
             let s = f.saturating_sub(PAD_FRAMES) * FRAME;
             let e = ((l + 1 + PAD_FRAMES) * FRAME).min(samples.len());
-            samples[s..e].to_vec()
+            samples.truncate(e);
+            if s > 0 {
+                samples.drain(..s);
+            }
+            samples
         }
-        _ => vec![],
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 确定性测试波形：300Hz 正弦
+    fn sine(n: usize, sr: u32) -> Vec<f32> {
+        (0..n)
+            .map(|i| (i as f32 / sr as f32 * 300.0 * std::f32::consts::TAU).sin() * 0.5)
+            .collect()
+    }
+
+    /// 流式（不规则小批次）与整段一次性重采样必须输出一致
+    #[test]
+    fn stream_matches_batch_resample() {
+        let sr = 48000u32;
+        let mono = sine(sr as usize + 517, sr); // 刻意非整块长度
+        let batch = to_16k(&mono, sr);
+
+        let mut st = StreamResampler::new(sr);
+        let steps = [960usize, 941, 1024, 313, 2048, 7];
+        let mut pos = 0usize;
+        let mut i = 0usize;
+        while pos < mono.len() {
+            let end = (pos + steps[i % steps.len()]).min(mono.len());
+            st.push(&mono[pos..end]);
+            pos = end;
+            i += 1;
+        }
+        let streamed = st.finish();
+
+        assert_eq!(batch.len(), streamed.len());
+        for (a, b) in batch.iter().zip(&streamed) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn passthrough_at_16k() {
+        let mono = sine(16000, TARGET_SR);
+        assert_eq!(to_16k(&mono, TARGET_SR), mono);
+    }
+
+    #[test]
+    fn empty_input_resamples_to_empty() {
+        assert!(to_16k(&[], 48000).is_empty());
+        assert!(to_16k(&[], TARGET_SR).is_empty());
+    }
+
+    #[test]
+    fn trim_keeps_speech_with_pad() {
+        let sr = TARGET_SR as usize;
+        let mut s = vec![0.0f32; sr]; // 1s 静音
+        s.extend(sine(sr / 2, TARGET_SR)); // 0.5s 语音
+        s.extend(vec![0.0f32; sr]); // 1s 静音
+        let trimmed = trim_silence(s);
+        let secs = trimmed.len() as f32 / TARGET_SR as f32;
+        // 0.5s 语音 + 前后各 ≤160ms pad
+        assert!(secs > 0.5 && secs < 0.9, "裁剪后时长异常：{secs}");
+    }
+
+    #[test]
+    fn trim_all_silence_returns_empty() {
+        assert!(trim_silence(vec![0.0; 16000]).is_empty());
+    }
+
+    #[test]
+    fn trim_handles_nan_without_panic() {
+        let mut s = sine(16000, TARGET_SR);
+        s[8000] = f32::NAN;
+        let _ = trim_silence(s);
     }
 }
