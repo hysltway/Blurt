@@ -40,6 +40,8 @@ windows = { version = "0.62", features = [
 
 [profile.dev]
 opt-level = 1
+# Full debuginfo bloats target/debug by ~1.5 GB; line tables keep file:line in backtraces.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2

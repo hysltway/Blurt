@@ -271,12 +271,55 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     hud::emit_state(app, "listen", None);
     tray::set_tooltip(app, "Blurt · 正在聆听…（Esc 取消）");
 
+    // 静音端点检测（自动停止）：与 HUD 同参的自适应噪声门，
+    // 纯环境噪音不算有声；仅对切换模式生效（见 auto_stop_session）。
+    let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
     let level_app = app.clone();
     let done_app = app.clone();
+    let mut vad_floor = 0.05f32;
+    let mut voiced_run = 0u32;
+    let mut silent_run = 0u32;
+    let mut heard_speech = false;
+    let mut vad_done = false;
     let rec = audio::start_recording(
         cfg.mic_device.clone(),
         cfg.max_record_secs,
-        move |v| hud::emit_level(&level_app, v),
+        move |v| {
+            hud::emit_level(&level_app, v);
+            if auto_stop <= 0.0 || vad_done {
+                return;
+            }
+            // 本底跟踪：快速下探 / 近本底缓升 / 说话时几乎不动
+            if v < vad_floor {
+                vad_floor += (v - vad_floor) * 0.12;
+            } else if v < vad_floor + 0.10 {
+                vad_floor += (v - vad_floor) * 0.02;
+            } else {
+                vad_floor += 0.0004;
+            }
+            vad_floor = vad_floor.clamp(0.02, 0.4);
+
+            if v > vad_floor + 0.07 {
+                voiced_run += 1;
+                silent_run = 0;
+                if voiced_run >= 5 {
+                    heard_speech = true; // ≥100ms 连续有声才算“说过话”
+                }
+            } else {
+                voiced_run = 0;
+                silent_run += 1;
+            }
+            // 说完后静音 auto_stop 秒自动结束；从未开口则多给 2s 宽限后同样结束
+            let limit_s = if heard_speech {
+                auto_stop
+            } else {
+                auto_stop + 2.0
+            };
+            if silent_run >= (limit_s * 50.0) as u32 {
+                vad_done = true;
+                auto_stop_session(&level_app, gen);
+            }
+        },
         move |res| on_audio_ready(&done_app, gen, res),
     );
 
@@ -302,6 +345,24 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
             hud::hide_later(app, 1000, gen);
             tray::set_tooltip(app, "Blurt · 麦克风不可用");
         }
+    }
+}
+
+/// 静音端点触发的自动结束（录音线程回调里调用）。
+/// 仅切换模式生效：按住说话时松开按键就是明确的结束动作，不做自动打断。
+fn auto_stop_session(app: &AppHandle, gen: u64) {
+    let state = app.state::<AppState>();
+    let mut session = state.session.lock();
+    match &*session {
+        Session::Recording {
+            gen: g,
+            toggle_mode: true,
+            ..
+        } if *g == gen => {
+            tracing::info!("静音超时，自动结束录音进入识别");
+            stop_and_recognize(app, &mut session);
+        }
+        _ => {}
     }
 }
 

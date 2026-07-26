@@ -34,4 +34,22 @@ Rebuild notes:
 - Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file; the 1s pause lets Windows release the image lock), then start the fresh `dist\Blurt.exe` again.
 - If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
 
+Worktree hygiene:
+
+- After a `claude/*` branch is merged, remove its worktree right away — every worktree accumulates its own multi-GB `src-tauri/target`.
+- DANGER: `git worktree remove --force` follows NTFS junctions and deletes THROUGH them (it wiped the real `models\` via a worktree junction on 2026-07-27). Worktrees here may contain a `models` junction pointing at `D:\Work\Blurt\models` (created for selftest). Always unlink reparse points first — `.Delete()` removes only the link, never the target:
+
+```powershell
+Get-ChildItem -Recurse -Force -Attributes ReparsePoint .claude\worktrees\<worktree-name> | ForEach-Object { $_.Delete() }
+git worktree remove --force .claude\worktrees\<worktree-name>
+```
+
+- If removal fails with "Permission denied", clear file attributes first, force-delete the folder, then prune the metadata:
+
+```powershell
+attrib -r -s -h ".claude\worktrees\<worktree-name>\*" /s /d
+cmd /c rmdir /s /q ".claude\worktrees\<worktree-name>"
+git worktree prune
+```
+
 Do not finish or commit while a required check is failing. If a required tool is unavailable, report that explicitly instead of treating the check as passed.

@@ -277,6 +277,12 @@ function render() {
   $('hotwords').value = cfg.hotwords || '';
   $('maxRecord').value = cfg.max_record_secs;
   $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
+  $('autoStop').value = cfg.auto_stop_secs;
+  $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
+}
+
+function fmtAutoStop(v) {
+  return v > 0 ? v + ' 秒' : '关闭';
 }
 
 async function loadMics() {
@@ -303,6 +309,11 @@ function bind() {
   $('maxRecord').addEventListener('input', e => {
     cfg.max_record_secs = parseInt(e.target.value);
     $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
+    save();
+  });
+  $('autoStop').addEventListener('input', e => {
+    cfg.auto_stop_secs = parseFloat(e.target.value);
+    $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
     save();
   });
 

@@ -21,6 +21,8 @@ pub struct Config {
     pub hotwords: String,
     /// 最长录音秒数，超时自动开始识别
     pub max_record_secs: u64,
+    /// 切换模式下说完后静音多少秒自动结束识别，0 = 关闭
+    pub auto_stop_secs: f32,
     /// 开机自启动
     pub autostart: bool,
     /// 模型目录覆盖，None = 自动探测
@@ -37,6 +39,7 @@ impl Default for Config {
             num_threads: 0,
             hotwords: String::new(),
             max_record_secs: 120,
+            auto_stop_secs: 2.0,
             autostart: false,
             model_dir: None,
         }

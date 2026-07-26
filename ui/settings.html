@@ -49,9 +49,16 @@
       <select id="micDevice"><option value="">系统默认</option></select>
     </div>
     <div class="row">
-      <label>最长录音时长<span class="desc">超时后自动开始识别</span></label>
+      <label>静音自动结束<span class="desc">轻点开始的录音，说完后静音这么久就自动识别；按住说话不受影响</span></label>
       <div class="range-wrap">
-        <input type="range" id="maxRecord" min="30" max="180" step="15" />
+        <input type="range" id="autoStop" min="0" max="6" step="0.5" />
+        <span class="val" id="autoStopVal">2 秒</span>
+      </div>
+    </div>
+    <div class="row">
+      <label>最长录音时长<span class="desc">安全上限，超时后自动开始识别</span></label>
+      <div class="range-wrap">
+        <input type="range" id="maxRecord" min="15" max="180" step="15" />
         <span class="val" id="maxRecordVal">120 秒</span>
       </div>
     </div>
