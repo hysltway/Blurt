@@ -93,7 +93,11 @@ pub fn hide(app: &AppHandle) {
 }
 
 pub fn emit_state(app: &AppHandle, state: &str, eta_ms: Option<u64>) {
-    let _ = app.emit_to("hud", "hud:state", json!({ "state": state, "eta_ms": eta_ms }));
+    let _ = app.emit_to(
+        "hud",
+        "hud:state",
+        json!({ "state": state, "eta_ms": eta_ms }),
+    );
 }
 
 pub fn emit_level(app: &AppHandle, v: f32) {
@@ -119,7 +123,9 @@ pub fn spawn_hover_watcher(app: &AppHandle, gen: u64) {
                     break;
                 }
             }
-            let Some(win) = app.get_webview_window("hud") else { break };
+            let Some(win) = app.get_webview_window("hud") else {
+                break;
+            };
             let mut pt = POINT::default();
             let _ = unsafe { GetCursorPos(&mut pt) };
             let inside = win

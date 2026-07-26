@@ -384,7 +384,9 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
                 emit_engine_status(&app);
                 tracing::info!(
                     "识别完成 {:.2}s（音频 {:.2}s）：{}",
-                    elapsed, speech_s, text
+                    elapsed,
+                    speech_s,
+                    text
                 );
 
                 if text.is_empty() {

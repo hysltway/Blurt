@@ -100,7 +100,10 @@ pub struct Stats {
 
 impl Default for Stats {
     fn default() -> Self {
-        Self { rtf_ema: 0.16, last_ms: None }
+        Self {
+            rtf_ema: 0.16,
+            last_ms: None,
+        }
     }
 }
 

@@ -38,8 +38,11 @@ fn pick(dir: &Path, names: &[&str]) -> Result<String> {
 impl AsrEngine {
     pub fn load(model_dir: &Path, num_threads: usize, hotwords: &str) -> Result<Self> {
         let threads = if num_threads == 0 {
-            (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2)
-                .clamp(2, 8) as i32
+            (std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                / 2)
+            .clamp(2, 8) as i32
         } else {
             num_threads as i32
         };
@@ -52,7 +55,10 @@ impl AsrEngine {
             .join(",");
 
         let qwen3 = OfflineQwen3ASRModelConfig {
-            conv_frontend: Some(pick(model_dir, &["conv_frontend.onnx", "conv_frontend.int8.onnx"])?),
+            conv_frontend: Some(pick(
+                model_dir,
+                &["conv_frontend.onnx", "conv_frontend.int8.onnx"],
+            )?),
             encoder: Some(pick(model_dir, &["encoder.int8.onnx", "encoder.onnx"])?),
             decoder: Some(pick(model_dir, &["decoder.int8.onnx", "decoder.onnx"])?),
             tokenizer: Some(model_dir.join("tokenizer").to_string_lossy().into_owned()),

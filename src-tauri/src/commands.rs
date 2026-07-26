@@ -14,7 +14,11 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 }
 
 #[tauri::command]
-pub fn set_config(app: AppHandle, state: State<'_, AppState>, config: Config) -> Result<(), String> {
+pub fn set_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    config: Config,
+) -> Result<(), String> {
     let old = state.config.read().clone();
 
     // 快捷键变更：先注册成功才落盘
@@ -25,7 +29,11 @@ pub fn set_config(app: AppHandle, state: State<'_, AppState>, config: Config) ->
     // 开机自启
     if config.autostart != old.autostart {
         let al = app.autolaunch();
-        let r = if config.autostart { al.enable() } else { al.disable() };
+        let r = if config.autostart {
+            al.enable()
+        } else {
+            al.disable()
+        };
         if let Err(e) = r {
             return Err(format!("设置开机自启失败:{e}"));
         }
@@ -137,7 +145,9 @@ pub fn bench_threads(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
 
     std::thread::spawn(move || {
         let done = |app: &AppHandle| {
-            app.state::<AppState>().benching.store(false, Ordering::SeqCst);
+            app.state::<AppState>()
+                .benching
+                .store(false, Ordering::SeqCst);
         };
         let samples = match crate::audio::read_wav_16k_mono(&wav.to_string_lossy()) {
             Ok(s) => s,
@@ -148,8 +158,14 @@ pub fn bench_threads(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
             }
         };
         let dur_s = samples.len() as f64 / crate::audio::TARGET_SR as f64;
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        let mut cands: Vec<usize> = [2usize, 4, 8, 12].iter().copied().filter(|&t| t <= cores).collect();
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let mut cands: Vec<usize> = [2usize, 4, 8, 12]
+            .iter()
+            .copied()
+            .filter(|&t| t <= cores)
+            .collect();
         if cands.is_empty() {
             cands.push(cores.max(1));
         }

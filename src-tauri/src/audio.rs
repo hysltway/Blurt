@@ -75,7 +75,8 @@ pub fn start_recording(
             let config: cpal::StreamConfig = sup.into();
 
             // 采集缓冲（已混为单声道，原始采样率）
-            let buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(sr as usize * 32)));
+            let buf: Arc<Mutex<Vec<f32>>> =
+                Arc::new(Mutex::new(Vec::with_capacity(sr as usize * 32)));
             let level_acc: Arc<Mutex<(f64, u64)>> = Arc::new(Mutex::new((0.0, 0))); // (平方和, 样本数)
 
             // 注意：Arc 必须以宏参数传入（宏体内的自由标识符按定义处解析，
@@ -241,13 +242,8 @@ pub fn to_16k(mono: &[f32], sr: u32) -> Vec<f32> {
         window: WindowFunction::BlackmanHarris2,
     };
     let chunk = 1024usize;
-    let mut rs = match SincFixedIn::<f32>::new(
-        TARGET_SR as f64 / sr as f64,
-        2.0,
-        params,
-        chunk,
-        1,
-    ) {
+    let mut rs = match SincFixedIn::<f32>::new(TARGET_SR as f64 / sr as f64, 2.0, params, chunk, 1)
+    {
         Ok(r) => r,
         Err(_) => return linear_resample(mono, sr),
     };

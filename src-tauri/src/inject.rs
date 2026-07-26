@@ -10,9 +10,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// 清洗 ASR 文本：去首尾空白，内部换行改空格（绝不注入回车，避免误触发送）
 pub fn sanitize(text: &str) -> String {
-    text.trim()
-        .replace("\r\n", " ")
-        .replace(['\r', '\n'], " ")
+    text.trim().replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
 fn key_down(vk: VIRTUAL_KEY) -> INPUT {
@@ -49,7 +47,10 @@ fn unicode_pair(unit: u16) -> [INPUT; 2] {
             },
         },
     };
-    [mk(KEYEVENTF_UNICODE), mk(KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)]
+    [
+        mk(KEYEVENTF_UNICODE),
+        mk(KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+    ]
 }
 
 fn send(inputs: &[INPUT]) -> Result<(), String> {

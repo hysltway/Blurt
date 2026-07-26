@@ -69,7 +69,11 @@ pub fn run(wav: Option<String>) -> i32 {
     engine.warmup();
 
     let trimmed = audio::trim_silence(&samples);
-    let use_samples = if trimmed.is_empty() { &samples } else { &trimmed };
+    let use_samples = if trimmed.is_empty() {
+        &samples
+    } else {
+        &trimmed
+    };
     match engine.transcribe(use_samples) {
         Ok((text, elapsed)) => {
             println!("识别耗时: {elapsed:.2}s   RTF: {:.3}", elapsed / dur as f64);
