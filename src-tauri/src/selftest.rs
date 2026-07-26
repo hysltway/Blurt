@@ -68,7 +68,7 @@ pub fn run(wav: Option<String>) -> i32 {
     // 预热一次，再计时正式识别
     engine.warmup();
 
-    let trimmed = audio::trim_silence(&samples);
+    let trimmed = audio::trim_silence(samples.clone());
     let use_samples = if trimmed.is_empty() {
         &samples
     } else {
