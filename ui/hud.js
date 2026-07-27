@@ -4,7 +4,7 @@
  * 整体形态 = 中央穹顶（两头窄、中间高），峰高由降噪后的实时响度决定；
  * 内部起伏 = 共同的行进大波 + 绸缕分层错相（层次感），响度越大布面张得越开：
  *   listen   聆听中（能量撑开丝波振幅 —— “它听到我了”）
- *   process  识别中（双频驻波拍频 + 噪声交错：有节奏但不规整的靛紫起伏）
+ *   process  识别中（双频驻波拍频 + 噪声交错：靛紫随进度渐变为绿色）
  *   success  完成（丝波收拢成绿色亮线，脉冲）
  *   error    出错（红色高频躁动 + 抖动）
  *   nothing  没听到有效语音（灰色塌陷）
@@ -111,7 +111,7 @@ function setState(s, payload) {
   if (!running) { running = true; requestAnimationFrame(frame); }
 }
 
-/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行（驱动识别中的流速） ---------- */
+/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行（驱动识别中的色相与流速） ---------- */
 let procStart = 0;
 function currentProgress() {
   if (state !== 'process') return 0;
@@ -212,8 +212,12 @@ function frame() {
     tAmp = 1; tSpread = 1;
     tAMul = lerp(1, 0.55 + 0.16 * Math.sin(t * 2.6), quiet); // 久无声 → 呼吸提示
   } else if (state === 'process') {
-    // 识别中保持稳定靛紫；仅在 success 状态切换为绿色。
-    tPair = COL.think;
+    // 松开后从靛紫渐变为绿色；实时聆听状态始终使用 COL.bar 的原蓝紫色。
+    const p = currentProgress();
+    tPair = {
+      deep: mixCol(COL.think.deep, COL.ok.deep, p * 0.65),
+      light: mixCol(COL.think.light, COL.ok.light, p * 0.65),
+    };
     tAmp = 1; tSpread = 1;
   } else if (state === 'success') {
     const k = easeOutCubic(clamp(te / 0.22, 0, 1));
