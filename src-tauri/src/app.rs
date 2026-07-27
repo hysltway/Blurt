@@ -9,10 +9,9 @@
 //! 取消/新会话会使旧代号作废，从根上杜绝“迟到的结果注入错窗口”。
 
 use parking_lot::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::asr::EngineSlot;
 use crate::audio::{RecorderHandle, StopMode};
@@ -47,12 +46,7 @@ pub struct AppState {
     pub session: Mutex<Session>,
     pub gen: AtomicU64,
     pub stats: Mutex<Stats>,
-    pub main_shortcut: Mutex<Option<Shortcut>>,
     pub benching: AtomicBool,
-    /// 快捷键原生捕获会话代号（换代即停止旧捕获线程）
-    pub capture_gen: AtomicU64,
-    /// 捕获钩子的 Windows 线程 ID，0 表示当前没有捕获线程。
-    pub capture_thread_id: AtomicU32,
 }
 
 impl AppState {
@@ -63,10 +57,7 @@ impl AppState {
             session: Mutex::new(Session::Idle),
             gen: AtomicU64::new(0),
             stats: Mutex::new(config::load_stats()),
-            main_shortcut: Mutex::new(None),
             benching: AtomicBool::new(false),
-            capture_gen: AtomicU64::new(0),
-            capture_thread_id: AtomicU32::new(0),
         }
     }
 }
@@ -126,7 +117,7 @@ pub fn spawn_engine_load(app: &AppHandle, open_settings_if_missing: bool) {
                 // 热身完成前到来，只是在引擎锁上排队，总耗时不变。
                 *state.engine.write() = EngineSlot::Ready(engine.clone());
                 emit_engine_status(&app);
-                tray::set_tooltip(&app, "Blurt · 就绪（按下快捷键说话）");
+                tray::set_tooltip(&app, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
                 tracing::info!(
                     "模型就绪，耗时 {:.1}s（后台热身中）",
                     t0.elapsed().as_secs_f64()
@@ -230,6 +221,23 @@ pub fn hotkey_released(app: &AppHandle, expected_gen: Option<u64>) {
     }
 }
 
+/// 按住 Ctrl+Alt 期间又按了第三个键：用户实际是在按别的快捷键（如 Ctrl+Alt+A
+/// 截图）。仅当这次按住直接开启的录音尚未松开时静默取消，避免把快捷键操作
+/// 误录成语音；轻点进入的切换模式与识别阶段不受影响。
+pub fn chord_broken(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let cancel = matches!(
+        &*state.session.lock(),
+        Session::Recording {
+            awaiting_release: true,
+            ..
+        }
+    );
+    if cancel {
+        esc_pressed(app);
+    }
+}
+
 pub fn esc_pressed(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut session = state.session.lock();
@@ -254,7 +262,7 @@ fn finish_ui_cancel(app: &AppHandle) {
     let gen = state.gen.load(Ordering::SeqCst);
     hud::emit_state(app, "cancel", None);
     hud::hide_later(app, 220, gen);
-    tray::set_tooltip(app, "Blurt · 就绪（按下快捷键说话）");
+    tray::set_tooltip(app, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
 }
 
 /* ---------------- 会话流转 ---------------- */
@@ -308,10 +316,8 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 toggle_mode: false,
                 awaiting_release: true,
             };
-            // 兜底监视主键松开 + 会话期 Esc 取消 + HUD 悬停出 ✕ 按钮
-            if let Some(sc) = *state.main_shortcut.lock() {
-                hotkey::spawn_release_watcher(app, gen, sc.key);
-            }
+            // 兜底监视 Ctrl+Alt 松开 + 会话期 Esc 取消 + HUD 悬停出 ✕ 按钮
+            hotkey::spawn_release_watcher(app, gen);
             hotkey::spawn_esc_watcher(app, gen);
             hud::spawn_hover_watcher(app, gen);
         }
@@ -375,7 +381,7 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
         Err(e) => {
             tracing::error!("录音失败：{e}");
             hud::emit_state(app, "error", None);
-            finish_session(app, gen, 1000, "Blurt · 就绪（按下快捷键说话）");
+            finish_session(app, gen, 1000, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
             return;
         }
     };
@@ -385,7 +391,7 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
     if speech_s < MIN_SPEECH_S {
         // 没听到有效语音：灰色塌陷提示，而非报错
         hud::emit_state(app, "nothing", None);
-        finish_session(app, gen, 900, "Blurt · 就绪（按下快捷键说话）");
+        finish_session(app, gen, 900, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
         return;
     }
 
@@ -436,13 +442,13 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
 
                 if text.is_empty() {
                     hud::emit_state(&app, "nothing", None);
-                    finish_session(&app, gen, 900, "Blurt · 就绪（按下快捷键说话）");
+                    finish_session(&app, gen, 900, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
                 } else {
                     let cfg = state.config.read().clone();
                     match inject::inject(&text, &cfg.inject_mode, cfg.type_threshold) {
                         Ok(()) => {
                             hud::emit_state(&app, "success", None);
-                            finish_session(&app, gen, 650, "Blurt · 就绪（按下快捷键说话）");
+                            finish_session(&app, gen, 650, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
                         }
                         Err(e) => {
                             tracing::error!("注入失败：{e}（已复制到剪贴板兜底）");

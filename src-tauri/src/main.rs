@@ -1,5 +1,5 @@
 //! Blurt — 完全离线的 Windows 语音输入工具
-//! 按下快捷键，说出想法，文字落进光标。
+//! 按住 Ctrl+Alt，说出想法，文字落进光标。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -13,9 +13,6 @@ mod hud;
 mod inject;
 mod selftest;
 mod tray;
-
-use tauri::Manager;
-use tauri_plugin_global_shortcut::ShortcutState;
 
 fn init_logging() {
     use tracing_subscriber::prelude::*;
@@ -56,25 +53,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
-                    let state = app.state::<app::AppState>();
-                    let is_main = state
-                        .main_shortcut
-                        .lock()
-                        .as_ref()
-                        .map_or(false, |s| s == shortcut);
-                    if is_main {
-                        match event.state {
-                            ShortcutState::Pressed => app::hotkey_pressed(app),
-                            ShortcutState::Released => app::hotkey_released(app, None),
-                        }
-                    }
-                })
-                .build(),
-        )
-        .manage(app::AppState::new(cfg.clone()))
+        .manage(app::AppState::new(cfg))
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,
@@ -84,8 +63,6 @@ fn main() {
             commands::open_model_dir,
             commands::open_log_dir,
             commands::copy_text,
-            commands::capture_hotkey_begin,
-            commands::capture_hotkey_end,
             commands::cancel_session,
             commands::get_noise_floor,
             commands::bench_threads,
@@ -96,8 +73,9 @@ fn main() {
             tray::create(&handle)?;
             hud::create(&handle)?;
 
-            // 注册全局快捷键（失败不致命：托盘提示，可去设置页改键）
-            if let Err(e) = hotkey::register_main(&handle, &cfg.hotkey) {
+            // 安装写死的 Ctrl+Alt 键盘钩子（RegisterHotKey 不支持纯修饰键组合，
+            // 必须走低级钩子；失败不致命，托盘提示后其余功能照常）
+            if let Err(e) = hotkey::spawn_chord_hook(&handle) {
                 tracing::error!("{e}");
                 tray::set_tooltip(&handle, &format!("Blurt · {e}"));
             }

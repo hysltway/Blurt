@@ -1,644 +1,329 @@
-//! 全局快捷键：解析、注册（强制替换语义）、捕获期挂起、按键松开与 Esc 的轮询看门。
+//! 全局快捷键：代码写死的 Ctrl+Alt 和弦。
+//!
+//! RegisterHotKey（以及基于它的 global-shortcut 插件）要求组合里必须有一个
+//! 主键，纯修饰键组合根本注册不上——这正是设置页始终捕获不到 Ctrl+Alt 的
+//! 根因。因此这里用常驻的 WH_KEYBOARD_LL 低级键盘钩子自行检测：
+//!   Ctrl+Alt 同时按下（且无其他修饰键）→ Pressed
+//!   任一键松开 → Released
+//!   按住期间又按了第三个键（Ctrl+Alt+A 截图之类）→ Broken，取消误触发的录音
+//! 另含录音会话期的两个轮询看门：主和弦松开兜底与 Esc 取消。
 
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-/// A global shortcut contains at most one modifier and one primary key.
-pub const MAX_HOTKEY_KEYS: usize = 2;
+static CHORD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
-static CAPTURE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+const WM_CHORD_KEY: u32 = 0x8001;
 
-/// "ctrl+Space" → Shortcut。修饰键小写；主键用 W3C Code 名（Space/KeyA/F8…）
-pub fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
-    let mut mods = Modifiers::empty();
-    let mut code: Option<Code> = None;
-    let mut key_count = 0;
-    for raw_part in s.split('+') {
-        let part = raw_part.trim();
-        if part.is_empty() {
-            return Err("快捷键包含空按键".to_string());
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
+
+/// Physical modifier-key state, reconstructed from the low-level key stream.
+#[derive(Default)]
+struct ChordMods {
+    lctrl: bool,
+    rctrl: bool,
+    lalt: bool,
+    ralt: bool,
+    lshift: bool,
+    rshift: bool,
+    lwin: bool,
+    rwin: bool,
+}
+
+impl ChordMods {
+    /// Updates one key's state; returns false when vk is not a modifier.
+    fn set(&mut self, vk: u32, pressed: bool) -> bool {
+        match vk {
+            0x10 | 0xA0 => self.lshift = pressed,
+            0xA1 => self.rshift = pressed,
+            0x11 | 0xA2 => self.lctrl = pressed,
+            0xA3 => self.rctrl = pressed,
+            0x12 | 0xA4 => self.lalt = pressed,
+            0xA5 => self.ralt = pressed,
+            0x5B => self.lwin = pressed,
+            0x5C => self.rwin = pressed,
+            _ => return false,
         }
-        match part.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => {
-                if mods.contains(Modifiers::CONTROL) {
-                    return Err("快捷键不能重复包含 Ctrl".to_string());
-                }
-                mods |= Modifiers::CONTROL;
-                key_count += 1;
-            }
-            "alt" | "option" => {
-                if mods.contains(Modifiers::ALT) {
-                    return Err("快捷键不能重复包含 Alt".to_string());
-                }
-                mods |= Modifiers::ALT;
-                key_count += 1;
-            }
-            "shift" => {
-                if mods.contains(Modifiers::SHIFT) {
-                    return Err("快捷键不能重复包含 Shift".to_string());
-                }
-                mods |= Modifiers::SHIFT;
-                key_count += 1;
-            }
-            "super" | "win" | "meta" | "cmd" => {
-                if mods.contains(Modifiers::SUPER) {
-                    return Err("快捷键不能重复包含 Win".to_string());
-                }
-                mods |= Modifiers::SUPER;
-                key_count += 1;
-            }
-            _ => {
-                if code.is_some() {
-                    return Err(format!("全局快捷键最多包含 {MAX_HOTKEY_KEYS} 个按键"));
-                }
-                code = Some(
-                    part.parse::<Code>()
-                        .map_err(|_| format!("无法识别的按键：{part}"))?,
-                );
-                key_count += 1;
-            }
+        true
+    }
+
+    fn ctrl(&self) -> bool {
+        self.lctrl || self.rctrl
+    }
+
+    fn alt(&self) -> bool {
+        self.lalt || self.ralt
+    }
+
+    /// Any modifier beyond Ctrl/Alt — makes the combination a different one.
+    fn extra(&self) -> bool {
+        self.lshift || self.rshift || self.lwin || self.rwin
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ChordPhase {
+    /// Chord not held, or broken and not yet fully released.
+    #[default]
+    Idle,
+    /// Exactly Ctrl+Alt held; a Pressed event has been emitted.
+    Active,
+    /// A third key joined while active: the user meant some other shortcut.
+    Contaminated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChordEvent {
+    Pressed,
+    Released,
+    Broken,
+}
+
+/// Detects the "exactly Ctrl+Alt held" chord from raw key events.
+#[derive(Default)]
+struct ChordState {
+    mods: ChordMods,
+    phase: ChordPhase,
+}
+
+impl ChordState {
+    fn handle(&mut self, message: u32, vk: u32) -> Option<ChordEvent> {
+        let pressed = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+        if !pressed && !matches!(message, WM_KEYUP | WM_SYSKEYUP) {
+            return None;
         }
+
+        if self.mods.set(vk, pressed) {
+            return match self.phase {
+                ChordPhase::Idle => {
+                    (pressed && self.mods.ctrl() && self.mods.alt() && !self.mods.extra()).then(
+                        || {
+                            self.phase = ChordPhase::Active;
+                            ChordEvent::Pressed
+                        },
+                    )
+                }
+                ChordPhase::Active => {
+                    if !self.mods.ctrl() || !self.mods.alt() {
+                        self.phase = ChordPhase::Idle;
+                        Some(ChordEvent::Released)
+                    } else if pressed && self.mods.extra() {
+                        self.phase = ChordPhase::Contaminated;
+                        Some(ChordEvent::Broken)
+                    } else {
+                        None // key-repeat of an already-held modifier
+                    }
+                }
+                ChordPhase::Contaminated => {
+                    if !self.mods.ctrl() || !self.mods.alt() {
+                        self.phase = ChordPhase::Idle;
+                    }
+                    None
+                }
+            };
+        }
+
+        // Non-modifier key while the chord is held: a regular shortcut such as
+        // Ctrl+Alt+A — not speech input.
+        if pressed && self.phase == ChordPhase::Active {
+            self.phase = ChordPhase::Contaminated;
+            return Some(ChordEvent::Broken);
+        }
+        None
     }
-    if key_count > MAX_HOTKEY_KEYS {
-        return Err(format!("全局快捷键最多包含 {MAX_HOTKEY_KEYS} 个按键"));
-    }
-    let code = code.ok_or_else(|| "快捷键缺少主键".to_string())?;
-    let m = if mods.is_empty() { None } else { Some(mods) };
-    Ok(Shortcut::new(m, code))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn accepts_a_modifier_and_primary_key() {
-        let shortcut = parse_shortcut("ctrl+Space").expect("two-key shortcut should parse");
-        assert_eq!(shortcut.mods, Modifiers::CONTROL);
-        assert_eq!(shortcut.key, Code::Space);
-    }
+    const LCTRL: u32 = 0xA2;
+    const LALT: u32 = 0xA4;
+    const LSHIFT: u32 = 0xA0;
+    const KEY_A: u32 = 0x41;
 
     #[test]
-    fn rejects_more_than_two_keys() {
-        for value in ["ctrl+alt+Space", "ctrl+shift+Space", "ctrl+Space+KeyA"] {
-            let error = parse_shortcut(value).expect_err("three-key shortcut should be rejected");
-            assert!(error.contains("最多包含 2 个按键"), "{value}: {error}");
-        }
-    }
-
-    #[test]
-    fn rejects_duplicate_modifiers() {
-        let error = parse_shortcut("ctrl+ctrl+Space").expect_err("duplicate modifier");
-        assert!(error.contains("不能重复"));
+    fn chord_press_and_release() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+        assert_eq!(s.handle(WM_SYSKEYUP, LALT), Some(ChordEvent::Released));
+        assert_eq!(s.handle(WM_KEYUP, LCTRL), None);
     }
 
     #[test]
-    fn rejects_empty_tokens() {
-        let error = parse_shortcut("ctrl++Space").expect_err("empty token");
-        assert!(error.contains("空按键"));
+    fn modifier_key_repeat_does_not_refire() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYUP, LCTRL), Some(ChordEvent::Released));
     }
 
     #[test]
-    fn capture_state_records_regular_and_system_combinations() {
-        let mut ctrl = CaptureKeyState::default();
-        assert_eq!(ctrl.handle(0x0100, 0xA2), None);
-        assert_eq!(
-            ctrl.handle(0x0100, 0x41),
-            Some(CaptureEvent::Captured("ctrl+KeyA".to_string()))
-        );
-
-        let mut alt = CaptureKeyState::default();
-        assert_eq!(alt.handle(0x0104, 0xA4), None);
-        assert_eq!(
-            alt.handle(0x0104, 0x20),
-            Some(CaptureEvent::Captured("alt+Space".to_string()))
-        );
+    fn third_key_breaks_chord_until_full_release() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+        assert_eq!(s.handle(WM_SYSKEYDOWN, KEY_A), Some(ChordEvent::Broken));
+        assert_eq!(s.handle(WM_SYSKEYDOWN, KEY_A), None); // key repeat
+        assert_eq!(s.handle(WM_SYSKEYUP, KEY_A), None);
+        assert_eq!(s.handle(WM_SYSKEYUP, LALT), None); // broken → no Released
+        assert_eq!(s.handle(WM_KEYUP, LCTRL), None);
+        // Fully released → the chord re-arms.
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
     }
 
     #[test]
-    fn capture_state_handles_escape_and_rejects_three_keys() {
-        let mut cancel = CaptureKeyState::default();
-        assert_eq!(cancel.handle(0x0100, 0x1B), Some(CaptureEvent::Cancel));
+    fn extra_modifier_breaks_active_chord() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LSHIFT), Some(ChordEvent::Broken));
+        assert_eq!(s.handle(WM_SYSKEYUP, LSHIFT), None); // still contaminated
+        assert_eq!(s.handle(WM_SYSKEYUP, LALT), None);
+    }
 
-        let mut overlong = CaptureKeyState::default();
-        assert_eq!(overlong.handle(0x0100, 0xA2), None);
-        assert_eq!(overlong.handle(0x0104, 0xA4), None);
-        assert_eq!(overlong.handle(0x0100, 0x41), Some(CaptureEvent::Invalid));
+    #[test]
+    fn no_activation_while_extra_modifier_held() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LSHIFT), None);
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), None); // Ctrl+Shift+Alt ≠ chord
+        assert_eq!(s.handle(WM_SYSKEYUP, LSHIFT), None);
+        // Re-pressing Alt with only Ctrl held activates the chord.
+        assert_eq!(s.handle(WM_SYSKEYUP, LALT), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+    }
+
+    #[test]
+    fn rearms_after_release_with_ctrl_still_held() {
+        let mut s = ChordState::default();
+        assert_eq!(s.handle(WM_KEYDOWN, LCTRL), None);
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
+        assert_eq!(s.handle(WM_SYSKEYUP, LALT), Some(ChordEvent::Released));
+        assert_eq!(s.handle(WM_SYSKEYDOWN, LALT), Some(ChordEvent::Pressed));
     }
 }
 
-/// 强制注册主快捷键：先注销旧的再注册新的；失败时尝试回滚旧键。
-pub fn register_main(app: &AppHandle, hotkey: &str) -> Result<(), String> {
-    let state = app.state::<crate::app::AppState>();
-    let new = parse_shortcut(hotkey)?;
-    let gs = app.global_shortcut();
-
-    let old = *state.main_shortcut.lock();
-    if let Some(old) = old {
-        let _ = gs.unregister(old);
-    }
-    match gs.register(new) {
-        Ok(()) => {
-            *state.main_shortcut.lock() = Some(new);
-            Ok(())
-        }
-        Err(e) => {
-            if let Some(old) = old {
-                let _ = gs.register(old); // 回滚
-            }
-            Err(format!("快捷键注册失败（可能被其他程序占用）：{e}"))
-        }
-    }
-}
-
-/// 捕获新快捷键期间挂起全局热键 —— 否则 RegisterHotKey 会在系统层吞掉按键，
-/// 设置页的输入框根本收不到 keydown（按当前热键还会误触录音）。
-pub fn suspend_main(app: &AppHandle) {
-    let state = app.state::<crate::app::AppState>();
-    if let Some(sc) = *state.main_shortcut.lock() {
-        let _ = app.global_shortcut().unregister(sc);
-    }
-    tracing::info!("全局快捷键已挂起（正在捕获新键）");
-}
-
-/// 捕获结束（成功与否都要调用）：按当前配置恢复注册
-pub fn resume_main(app: &AppHandle) -> Result<(), String> {
-    let hotkey = {
-        let state = app.state::<crate::app::AppState>();
-        let h = state.config.read().hotkey.clone();
-        h
-    };
-    register_main(app, &hotkey)
-}
-
-/// W3C Code → Windows 虚拟键码（用于兜底检测“按键已松开”）
-pub fn vk_for_code(code: Code) -> Option<u16> {
-    use Code::*;
-    let vk = match code {
-        KeyA => 0x41,
-        KeyB => 0x42,
-        KeyC => 0x43,
-        KeyD => 0x44,
-        KeyE => 0x45,
-        KeyF => 0x46,
-        KeyG => 0x47,
-        KeyH => 0x48,
-        KeyI => 0x49,
-        KeyJ => 0x4A,
-        KeyK => 0x4B,
-        KeyL => 0x4C,
-        KeyM => 0x4D,
-        KeyN => 0x4E,
-        KeyO => 0x4F,
-        KeyP => 0x50,
-        KeyQ => 0x51,
-        KeyR => 0x52,
-        KeyS => 0x53,
-        KeyT => 0x54,
-        KeyU => 0x55,
-        KeyV => 0x56,
-        KeyW => 0x57,
-        KeyX => 0x58,
-        KeyY => 0x59,
-        KeyZ => 0x5A,
-        Digit0 => 0x30,
-        Digit1 => 0x31,
-        Digit2 => 0x32,
-        Digit3 => 0x33,
-        Digit4 => 0x34,
-        Digit5 => 0x35,
-        Digit6 => 0x36,
-        Digit7 => 0x37,
-        Digit8 => 0x38,
-        Digit9 => 0x39,
-        F1 => 0x70,
-        F2 => 0x71,
-        F3 => 0x72,
-        F4 => 0x73,
-        F5 => 0x74,
-        F6 => 0x75,
-        F7 => 0x76,
-        F8 => 0x77,
-        F9 => 0x78,
-        F10 => 0x79,
-        F11 => 0x7A,
-        F12 => 0x7B,
-        F13 => 0x7C,
-        F14 => 0x7D,
-        F15 => 0x7E,
-        F16 => 0x7F,
-        F17 => 0x80,
-        F18 => 0x81,
-        F19 => 0x82,
-        F20 => 0x83,
-        F21 => 0x84,
-        F22 => 0x85,
-        F23 => 0x86,
-        F24 => 0x87,
-        Space => 0x20,
-        ArrowLeft => 0x25,
-        ArrowUp => 0x26,
-        ArrowRight => 0x27,
-        ArrowDown => 0x28,
-        Home => 0x24,
-        End => 0x23,
-        PageUp => 0x21,
-        PageDown => 0x22,
-        Insert => 0x2D,
-        Delete => 0x2E,
-        Backquote => 0xC0,
-        Minus => 0xBD,
-        Equal => 0xBB,
-        BracketLeft => 0xDB,
-        BracketRight => 0xDD,
-        Backslash => 0xDC,
-        Semicolon => 0xBA,
-        Quote => 0xDE,
-        Comma => 0xBC,
-        Period => 0xBE,
-        Slash => 0xBF,
-        _ => return None,
-    };
-    Some(vk)
-}
-
-/// Windows 虚拟键码 → W3C Code（原生捕获用）
-fn vk_to_code(vk: u32) -> Option<Code> {
-    use Code::*;
-    let code = match vk {
-        0x41..=0x5A => match vk {
-            0x41 => KeyA,
-            0x42 => KeyB,
-            0x43 => KeyC,
-            0x44 => KeyD,
-            0x45 => KeyE,
-            0x46 => KeyF,
-            0x47 => KeyG,
-            0x48 => KeyH,
-            0x49 => KeyI,
-            0x4A => KeyJ,
-            0x4B => KeyK,
-            0x4C => KeyL,
-            0x4D => KeyM,
-            0x4E => KeyN,
-            0x4F => KeyO,
-            0x50 => KeyP,
-            0x51 => KeyQ,
-            0x52 => KeyR,
-            0x53 => KeyS,
-            0x54 => KeyT,
-            0x55 => KeyU,
-            0x56 => KeyV,
-            0x57 => KeyW,
-            0x58 => KeyX,
-            0x59 => KeyY,
-            _ => KeyZ,
-        },
-        0x30 => Digit0,
-        0x31 => Digit1,
-        0x32 => Digit2,
-        0x33 => Digit3,
-        0x34 => Digit4,
-        0x35 => Digit5,
-        0x36 => Digit6,
-        0x37 => Digit7,
-        0x38 => Digit8,
-        0x39 => Digit9,
-        0x70 => F1,
-        0x71 => F2,
-        0x72 => F3,
-        0x73 => F4,
-        0x74 => F5,
-        0x75 => F6,
-        0x76 => F7,
-        0x77 => F8,
-        0x78 => F9,
-        0x79 => F10,
-        0x7A => F11,
-        0x7B => F12,
-        0x7C => F13,
-        0x7D => F14,
-        0x7E => F15,
-        0x7F => F16,
-        0x80 => F17,
-        0x81 => F18,
-        0x82 => F19,
-        0x83 => F20,
-        0x84 => F21,
-        0x85 => F22,
-        0x86 => F23,
-        0x87 => F24,
-        0x20 => Space,
-        0x25 => ArrowLeft,
-        0x26 => ArrowUp,
-        0x27 => ArrowRight,
-        0x28 => ArrowDown,
-        0x24 => Home,
-        0x23 => End,
-        0x21 => PageUp,
-        0x22 => PageDown,
-        0x2D => Insert,
-        0x2E => Delete,
-        0xC0 => Backquote,
-        0xBD => Minus,
-        0xBB => Equal,
-        0xDB => BracketLeft,
-        0xDD => BracketRight,
-        0xDC => Backslash,
-        0xBA => Semicolon,
-        0xDE => Quote,
-        0xBC => Comma,
-        0xBE => Period,
-        0xBF => Slash,
-        _ => return None,
-    };
-    Some(code)
-}
-
-#[derive(Default)]
-struct CaptureModifiers {
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    win: bool,
-}
-
-impl CaptureModifiers {
-    fn set(&mut self, vk: u32, pressed: bool) -> bool {
-        match vk {
-            0x10 | 0xA0 | 0xA1 => self.shift = pressed,
-            0x11 | 0xA2 | 0xA3 => self.ctrl = pressed,
-            0x12 | 0xA4 | 0xA5 => self.alt = pressed,
-            0x5B | 0x5C => self.win = pressed,
-            _ => return false,
-        }
-        true
-    }
-
-    fn count(&self) -> usize {
-        [self.ctrl, self.alt, self.shift, self.win]
-            .into_iter()
-            .filter(|pressed| *pressed)
-            .count()
-    }
-
-    fn any(&self) -> bool {
-        self.ctrl || self.alt || self.shift || self.win
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum CaptureEvent {
-    Captured(String),
-    Invalid,
-    Cancel,
-}
-
-#[derive(Default)]
-struct CaptureKeyState {
-    modifiers: CaptureModifiers,
-    ignored_key: Option<u32>,
-    done: bool,
-}
-
-impl CaptureKeyState {
-    fn handle(&mut self, message: u32, vk: u32) -> Option<CaptureEvent> {
-        const WM_KEYDOWN: u32 = 0x0100;
-        const WM_KEYUP: u32 = 0x0101;
-        const WM_SYSKEYDOWN: u32 = 0x0104;
-        const WM_SYSKEYUP: u32 = 0x0105;
-
-        if self.done {
-            return None;
-        }
-
-        if message == WM_KEYUP || message == WM_SYSKEYUP {
-            self.modifiers.set(vk, false);
-            if self.ignored_key == Some(vk) {
-                self.ignored_key = None;
-            }
-            return None;
-        }
-        if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
-            return None;
-        }
-        if self.modifiers.set(vk, true) {
-            return None;
-        }
-        if vk == 0x1B {
-            self.done = true;
-            return Some(CaptureEvent::Cancel);
-        }
-        if self.ignored_key.is_some() {
-            return None;
-        }
-
-        let code = vk_to_code(vk)?;
-        let is_function_key = (0x70..=0x87).contains(&vk);
-        if self.modifiers.count() + 1 > MAX_HOTKEY_KEYS
-            || (!self.modifiers.any() && !is_function_key)
-        {
-            self.ignored_key = Some(vk);
-            return Some(CaptureEvent::Invalid);
-        }
-
-        let mut parts = Vec::with_capacity(MAX_HOTKEY_KEYS);
-        if self.modifiers.ctrl {
-            parts.push("ctrl".to_string());
-        }
-        if self.modifiers.alt {
-            parts.push("alt".to_string());
-        }
-        if self.modifiers.shift {
-            parts.push("shift".to_string());
-        }
-        if self.modifiers.win {
-            parts.push("super".to_string());
-        }
-        parts.push(code.to_string());
-        self.done = true;
-        Some(CaptureEvent::Captured(parts.join("+")))
-    }
-}
-
-const WM_CAPTURE_KEY: u32 = 0x8001;
-
-unsafe extern "system" fn capture_keyboard_hook(
+unsafe extern "system" fn chord_keyboard_hook(
     hook_code: i32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use std::sync::atomic::Ordering;
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, PostThreadMessageW, HC_ACTION, KBDLLHOOKSTRUCT,
+        CallNextHookEx, PostThreadMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
     };
 
     if hook_code == HC_ACTION as i32 && lparam.0 != 0 {
         let key = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
-        let thread_id = CAPTURE_HOOK_THREAD_ID.load(Ordering::SeqCst);
-        if thread_id != 0 {
-            let _ = unsafe {
-                PostThreadMessageW(
-                    thread_id,
-                    WM_CAPTURE_KEY,
-                    WPARAM(key.vkCode as usize),
-                    LPARAM(wparam.0 as isize),
-                )
-            };
+        // Physical keystrokes only: our own paste injection (SendInput Ctrl+V)
+        // and other synthetic input must never drive the chord.
+        if key.flags.0 & LLKHF_INJECTED.0 == 0 {
+            let thread_id = CHORD_HOOK_THREAD_ID.load(Ordering::SeqCst);
+            if thread_id != 0 {
+                let _ = unsafe {
+                    PostThreadMessageW(
+                        thread_id,
+                        WM_CHORD_KEY,
+                        WPARAM(key.vkCode as usize),
+                        LPARAM(wparam.0 as isize),
+                    )
+                };
+            }
         }
     }
 
     unsafe { CallNextHookEx(None, hook_code, wparam, lparam) }
 }
 
-fn emit_capture_event(app: &AppHandle, event: CaptureEvent) -> bool {
-    use tauri::Emitter;
-
-    match event {
-        CaptureEvent::Captured(hotkey) => {
-            tracing::info!("低级键盘钩子捕获到快捷键：{hotkey}");
-            let _ = app.emit_to(
-                "settings",
-                "hotkey:captured",
-                serde_json::json!({ "hotkey": hotkey }),
-            );
-            true
-        }
-        CaptureEvent::Invalid => {
-            let _ = app.emit_to("settings", "hotkey:capture_invalid", serde_json::json!({}));
-            false
-        }
-        CaptureEvent::Cancel => {
-            let _ = app.emit_to("settings", "hotkey:capture_cancel", serde_json::json!({}));
-            true
-        }
-    }
-}
-
-fn run_capture_hook(
-    app: AppHandle,
-    gen: u64,
-    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
-) {
-    use std::sync::atomic::Ordering;
-    use tauri::Emitter;
+fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), String>>) {
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetMessageW, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_NOREMOVE,
         WH_KEYBOARD_LL,
     };
 
+    // Create the thread message queue before publishing the thread id.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut message = MSG::default();
     let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
 
-    let state = app.state::<crate::app::AppState>();
-    state.capture_thread_id.store(thread_id, Ordering::SeqCst);
-    if state.capture_gen.load(Ordering::SeqCst) != gen {
-        let _ = state.capture_thread_id.compare_exchange(
-            thread_id,
-            0,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        );
-        let _ = ready.send(Err("快捷键捕获已取消".to_string()));
+    // Session work (audio device open, HUD window calls) must not run on this
+    // thread: a hook thread that stalls gets its hook silently removed by
+    // Windows. A dedicated dispatcher keeps events ordered and the loop fast.
+    let (tx, rx) = std::sync::mpsc::channel::<ChordEvent>();
+    let dispatch_app = app.clone();
+    let dispatcher = std::thread::Builder::new()
+        .name("blurt-hotkey-dispatch".to_string())
+        .spawn(move || {
+            for event in rx {
+                match event {
+                    ChordEvent::Pressed => crate::app::hotkey_pressed(&dispatch_app),
+                    ChordEvent::Released => crate::app::hotkey_released(&dispatch_app, None),
+                    ChordEvent::Broken => crate::app::chord_broken(&dispatch_app),
+                }
+            }
+        });
+    if let Err(error) = dispatcher {
+        let _ = ready.send(Err(format!("启动快捷键分发线程失败：{error}")));
         return;
     }
-    drop(state);
 
-    CAPTURE_HOOK_THREAD_ID.store(thread_id, Ordering::SeqCst);
-
+    CHORD_HOOK_THREAD_ID.store(thread_id, Ordering::SeqCst);
     let hook =
-        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(capture_keyboard_hook), None, 0) } {
+        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(chord_keyboard_hook), None, 0) } {
             Ok(hook) => hook,
             Err(error) => {
-                let _ = CAPTURE_HOOK_THREAD_ID.compare_exchange(
-                    thread_id,
-                    0,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
-                let state = app.state::<crate::app::AppState>();
-                let _ = state.capture_thread_id.compare_exchange(
-                    thread_id,
-                    0,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
-                let _ = ready.send(Err(format!("安装键盘监听器失败：{error}")));
+                CHORD_HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+                let _ = ready.send(Err(format!("安装 Ctrl+Alt 键盘监听失败：{error}")));
                 return;
             }
         };
-
-    tracing::info!("低级键盘捕获钩子已启动（线程 {thread_id}）");
     let _ = ready.send(Ok(()));
-    let mut message_error = None;
-    let mut keys = CaptureKeyState::default();
+    tracing::info!("Ctrl+Alt 低级键盘钩子已启动（线程 {thread_id}）");
 
+    let mut chord = ChordState::default();
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
         if result.0 == -1 {
-            message_error = Some("键盘监听消息循环异常退出".to_string());
+            tracing::error!("Ctrl+Alt 键盘监听消息循环异常退出");
             break;
         }
         if result.0 == 0 {
             break;
         }
-        if message.message != WM_CAPTURE_KEY {
+        if message.message != WM_CHORD_KEY {
             continue;
         }
-
-        if app
-            .state::<crate::app::AppState>()
-            .capture_gen
-            .load(Ordering::SeqCst)
-            != gen
-        {
-            break;
-        }
-        let event = keys.handle(message.lParam.0 as u32, message.wParam.0 as u32);
-        if event.is_some_and(|event| emit_capture_event(&app, event)) {
-            break;
+        if let Some(event) = chord.handle(message.lParam.0 as u32, message.wParam.0 as u32) {
+            let _ = tx.send(event);
         }
     }
 
+    CHORD_HOOK_THREAD_ID.store(0, Ordering::SeqCst);
     if let Err(error) = unsafe { UnhookWindowsHookEx(hook) } {
-        tracing::error!("卸载键盘捕获钩子失败：{error}");
+        tracing::error!("卸载 Ctrl+Alt 键盘钩子失败：{error}");
     }
-    let _ =
-        CAPTURE_HOOK_THREAD_ID.compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
-    let state = app.state::<crate::app::AppState>();
-    let _ =
-        state
-            .capture_thread_id
-            .compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
-    drop(state);
-    tracing::info!("低级键盘捕获钩子已停止（线程 {thread_id}）");
-
-    if let Some(error) = message_error {
-        tracing::error!("{error}");
-        let _ = app.emit_to(
-            "settings",
-            "hotkey:capture_error",
-            serde_json::json!({ "message": error }),
-        );
-    }
+    tracing::warn!("Ctrl+Alt 键盘钩子已停止（正常情况下应常驻）");
 }
 
-/// 原生快捷键捕获：安装 WH_KEYBOARD_LL 低级键盘钩子并运行 Windows 消息循环。
-/// 这与 rdev/global keyboard listener 的 Windows 实现一致，可捕获被输入法或系统菜单
-/// 截获的 Ctrl+Space、Alt+Space 和 Esc。函数会等待钩子安装完成后再返回。
-pub fn spawn_capture(app: &AppHandle, gen: u64) -> Result<(), String> {
+/// 安装常驻的 Ctrl+Alt 和弦钩子；等待钩子真正挂上后才返回。
+pub fn spawn_chord_hook(app: &AppHandle) -> Result<(), String> {
     use std::sync::mpsc::{sync_channel, RecvTimeoutError};
     use std::time::Duration;
 
     let (ready_tx, ready_rx) = sync_channel(1);
     let app = app.clone();
     std::thread::Builder::new()
-        .name("blurt-hotkey-capture".to_string())
-        .spawn(move || run_capture_hook(app, gen, ready_tx))
+        .name("blurt-hotkey".to_string())
+        .spawn(move || run_chord_hook(app, ready_tx))
         .map_err(|error| format!("启动键盘监听线程失败：{error}"))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(2)) {
@@ -648,32 +333,13 @@ pub fn spawn_capture(app: &AppHandle, gen: u64) -> Result<(), String> {
     }
 }
 
-/// 停止当前捕获线程。线程消息队列在安装钩子前已创建，因此 WM_QUIT 不会丢失。
-pub fn stop_capture(app: &AppHandle) {
-    use std::sync::atomic::Ordering;
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-
-    let thread_id = app
-        .state::<crate::app::AppState>()
-        .capture_thread_id
-        .swap(0, Ordering::SeqCst);
-    if thread_id == 0 {
-        return;
-    }
-    let _ =
-        CAPTURE_HOOK_THREAD_ID.compare_exchange(thread_id, 0, Ordering::SeqCst, Ordering::SeqCst);
-    if let Err(error) = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
-        tracing::debug!("停止键盘捕获线程 {thread_id} 时消息投递失败：{error}");
-    }
-}
-
-/// 兜底松开监视：插件的 Released 事件之外再轮询一层，确保“按住说话”一定能停下。
-pub fn spawn_release_watcher(app: &AppHandle, gen: u64, code: Code) {
-    let Some(vk) = vk_for_code(code) else { return };
+/// 兜底松开监视：钩子事件之外再轮询一层物理键态，确保“按住说话”一定能停。
+pub fn spawn_release_watcher(app: &AppHandle, gen: u64) {
     let app = app.clone();
     std::thread::spawn(move || {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        const VK_CONTROL: i32 = 0x11;
+        const VK_MENU: i32 = 0x12;
         std::thread::sleep(std::time::Duration::from_millis(30));
         loop {
             {
@@ -682,8 +348,9 @@ pub fn spawn_release_watcher(app: &AppHandle, gen: u64, code: Code) {
                     return;
                 }
             }
-            let down = unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0;
-            if !down {
+            let ctrl = unsafe { GetAsyncKeyState(VK_CONTROL) } as u16 & 0x8000 != 0;
+            let alt = unsafe { GetAsyncKeyState(VK_MENU) } as u16 & 0x8000 != 0;
+            if !ctrl || !alt {
                 crate::app::hotkey_released(&app, Some(gen));
                 return;
             }
