@@ -46,11 +46,34 @@ pub fn set_config(
     config::save(&config).map_err(|e| format!("保存配置失败：{e}"))?;
 
     // 引擎相关变更 → 后台重载
-    if config.num_threads != old.num_threads
+    if config.recognition_mode != old.recognition_mode
+        || config.num_threads != old.num_threads
         || config.hotwords != old.hotwords
         || config.model_dir != old.model_dir
     {
         crate::app::spawn_engine_load(&app, false);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn doubao_api_key_status() -> serde_json::Value {
+    match config::load_doubao_api_key() {
+        Ok(key) => serde_json::json!({ "configured": key.is_some(), "error": null }),
+        Err(e) => serde_json::json!({ "configured": false, "error": format!("{e:#}") }),
+    }
+}
+
+#[tauri::command]
+pub fn set_doubao_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    config::save_doubao_api_key(&api_key).map_err(|e| format!("保存 API Key 失败：{e:#}"))?;
+    crate::app::emit_engine_status(&app);
+    if app.state::<AppState>().config.read().recognition_mode == "doubao" {
+        if api_key.trim().is_empty() {
+            crate::tray::set_tooltip(&app, "Blurt · 请在设置中配置豆包 API Key");
+        } else {
+            crate::tray::set_tooltip(&app, "Blurt · 就绪（豆包 API）");
+        }
     }
     Ok(())
 }

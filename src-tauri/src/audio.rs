@@ -125,6 +125,14 @@ impl StreamResampler {
         }
     }
 
+    fn output_len(&self) -> usize {
+        self.out.len()
+    }
+
+    fn output(&self) -> &[f32] {
+        &self.out
+    }
+
     fn finish(mut self) -> Vec<f32> {
         match &mut self.kind {
             ResamplerKind::Passthrough => {}
@@ -155,11 +163,13 @@ impl StreamResampler {
 
 /// 启动录音线程。`on_level` 约 50Hz 回调每 tick 的原始 RMS（未做感知映射，
 /// 供调用方做 HUD 映射与静音端点检测）；
+/// `on_samples` 增量交付已经重采样为 16kHz 单声道的样本，供在线识别边录边传；
 /// `on_done` 仅在 Finish（含超时自动结束）时回调，交付 16kHz 单声道样本。
 pub fn start_recording(
     device_name: Option<String>,
     max_secs: u64,
     mut on_level: impl FnMut(f32) + Send + 'static,
+    mut on_samples: impl FnMut(&[f32]) + Send + 'static,
     on_done: impl FnOnce(Result<Vec<f32>, String>) + Send + 'static,
 ) -> Result<RecorderHandle, String> {
     let (stop_tx, stop_rx) = bounded::<StopMode>(2);
@@ -276,6 +286,7 @@ pub fn start_recording(
 
             // 流式重采样器：录音过程中增量处理，结束时只剩尾部冲洗
             let mut rs = StreamResampler::new(sr);
+            let mut streamed_samples = 0usize;
             // 与 buf 同容量：交换进回调侧后无需再扩容
             let mut spare: Vec<f32> = Vec::with_capacity(sr as usize / 4);
 
@@ -296,6 +307,10 @@ pub fn start_recording(
                             let rms = (sq / spare.len() as f64).sqrt() as f32;
                             on_level(rms);
                             rs.push(&spare);
+                            if rs.output_len() > streamed_samples {
+                                on_samples(&rs.output()[streamed_samples..]);
+                                streamed_samples = rs.output_len();
+                            }
                             spare.clear();
                         }
                         if started.elapsed().as_secs() >= max_secs {
@@ -314,7 +329,15 @@ pub fn start_recording(
             // 冲洗停止信号到达前最后未处理的余量
             let tail = std::mem::take(&mut *buf.lock());
             rs.push(&tail);
-            on_done(Ok(rs.finish()));
+            if rs.output_len() > streamed_samples {
+                on_samples(&rs.output()[streamed_samples..]);
+                streamed_samples = rs.output_len();
+            }
+            let samples = rs.finish();
+            if samples.len() > streamed_samples {
+                on_samples(&samples[streamed_samples..]);
+            }
+            on_done(Ok(samples));
         })
         .map_err(|e| format!("无法创建录音线程：{e}"))?;
 

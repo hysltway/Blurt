@@ -311,9 +311,32 @@ input {
   gap: 12px;
 }
 
+.source-row {
+  padding-top: 5px;
+}
+
+.seg.seg-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.engine-panel[hidden] {
+  display: none;
+}
+
+.engine-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.api-panel {
+  padding-bottom: 2px;
+}
+
 /* Form controls */
 select,
-textarea {
+textarea,
+input[type="password"],
+input[type="text"] {
   min-width: 190px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
@@ -353,18 +376,41 @@ textarea {
 }
 
 select:hover,
-textarea:hover {
+textarea:hover,
+input[type="password"]:hover,
+input[type="text"]:hover {
   border-color: #c9c8c3;
 }
 
 select:focus-visible,
 textarea:focus-visible,
+input[type="password"]:focus-visible,
+input[type="text"]:focus-visible,
 .btn:focus-visible,
 .seg input:focus-visible + span,
 .switch input:focus-visible + .slider,
 input[type="range"]:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 9px;
+}
+
+.credential-line {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 7px;
+}
+
+.privacy-note {
+  padding: 8px 0 2px;
+  color: var(--muted);
+  font-size: 10.5px;
 }
 
 .seg {
@@ -777,6 +823,14 @@ footer {
     display: flex;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .credential-line {
+    grid-template-columns: 1fr auto;
+  }
+
+  .credential-line input {
+    grid-column: 1 / -1;
   }
 }
 

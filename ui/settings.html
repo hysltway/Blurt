@@ -13,7 +13,7 @@
     <div class="logo" aria-hidden="true">B</div>
     <div class="brand-text">
       <h1>Blurt</h1>
-      <p>本地语音输入 / 设置</p>
+      <p>语音输入 / 设置</p>
     </div>
     <div class="engine-pill" title="识别引擎状态" role="status" aria-live="polite">
       <span class="status-label">引擎</span>
@@ -91,41 +91,71 @@
     <h2>
       <span class="section-id" aria-hidden="true">03</span>
       <span>识别引擎</span>
-      <span class="tag">Qwen3-ASR-0.6B</span>
+      <span class="tag" id="engineTag">Qwen3-ASR-0.6B</span>
     </h2>
-    <div class="model-banner" id="modelBanner" role="status" aria-live="polite">
-      <span class="dot missing" id="modelDot"></span>
-      <div class="model-info">
-        <div id="modelText">正在检查模型…</div>
-        <div class="path" id="modelPath"></div>
+    <div class="row row-stack source-row">
+      <div class="field-label">识别来源<span class="desc">本机离线处理，或调用豆包语音服务</span></div>
+      <div class="seg seg-two" id="recognitionSeg" role="radiogroup" aria-label="识别来源">
+        <label><input type="radio" name="recognitionMode" value="local" /><span>本地模型</span></label>
+        <label><input type="radio" name="recognitionMode" value="doubao" /><span>豆包 API</span></label>
       </div>
-      <div class="stats" id="stats"></div>
     </div>
-    <div class="btn-row">
-      <button class="btn" id="btnReload" type="button">重新加载</button>
-      <button class="btn" id="btnOpenModelDir" type="button">打开模型目录</button>
-      <button class="btn primary" id="btnCopyCmd" type="button" style="display:none">复制下载命令</button>
-    </div>
-    <div class="row">
-      <label for="numThreads">推理线程<span class="desc">自动按 CPU 核心数选择</span></label>
-      <select id="numThreads" class="slim">
-        <option value="0">自动</option>
-        <option value="2">2</option>
-        <option value="4">4</option>
-        <option value="6">6</option>
-        <option value="8">8</option>
-        <option value="12">12</option>
-      </select>
-    </div>
-    <div class="row col row-bench">
-      <label>线程测速<span class="desc">实测各线程数的识别速度（约半分钟，期间 CPU 占用较高）</span></label>
+
+    <div class="engine-panel" id="localEnginePanel">
+      <div class="model-banner" id="modelBanner" role="status" aria-live="polite">
+        <span class="dot missing" id="modelDot"></span>
+        <div class="model-info">
+          <div id="modelText">正在检查模型…</div>
+          <div class="path" id="modelPath"></div>
+        </div>
+        <div class="stats" id="stats"></div>
+      </div>
       <div class="btn-row">
-        <button class="btn" id="btnBench" type="button">一键测速</button>
-        <button class="btn primary" id="btnApplyBest" type="button" style="display:none"></button>
+        <button class="btn" id="btnReload" type="button">重新加载</button>
+        <button class="btn" id="btnOpenModelDir" type="button">打开模型目录</button>
+        <button class="btn primary" id="btnCopyCmd" type="button" style="display:none">复制下载命令</button>
       </div>
-      <div class="bench-status" id="benchStatus" role="status" aria-live="polite"></div>
-      <table id="benchTable" style="display:none"></table>
+      <div class="row">
+        <label for="numThreads">推理线程<span class="desc">自动按 CPU 核心数选择</span></label>
+        <select id="numThreads" class="slim">
+          <option value="0">自动</option>
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+          <option value="12">12</option>
+        </select>
+      </div>
+      <div class="row col row-bench">
+        <label>线程测速<span class="desc">实测各线程数的识别速度（约半分钟，期间 CPU 占用较高）</span></label>
+        <div class="btn-row">
+          <button class="btn" id="btnBench" type="button">一键测速</button>
+          <button class="btn primary" id="btnApplyBest" type="button" style="display:none"></button>
+        </div>
+        <div class="bench-status" id="benchStatus" role="status" aria-live="polite"></div>
+        <table id="benchTable" style="display:none"></table>
+      </div>
     </div>
+
+    <div class="engine-panel api-panel" id="doubaoEnginePanel" hidden>
+      <div class="model-banner" id="apiBanner" role="status" aria-live="polite">
+        <span class="dot missing" id="apiDot"></span>
+        <div class="model-info">
+          <div id="apiStatusText">正在检查 API Key…</div>
+          <div class="path">流式语音识别 1.0 · 200 ms 实时分包</div>
+        </div>
+      </div>
+      <div class="row row-stack api-credentials">
+        <label for="doubaoApiKey">API Key<span class="desc">保存在 Windows 凭据管理器</span></label>
+        <div class="credential-line">
+          <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
+          <button class="btn primary" id="btnSaveApiKey" type="button">保存密钥</button>
+          <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
+        </div>
+      </div>
+      <p class="privacy-note">使用 API 时，录音会实时发送至豆包语音服务。</p>
+    </div>
+
     <div class="row col row-hotwords">
       <label for="hotwords">热词<span class="desc">专有名词用逗号分隔；「错词=&gt;正词」可强制替换</span></label>
       <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, cloud=>claude" spellcheck="false"></textarea>
@@ -134,7 +164,7 @@
 </main>
 
 <footer>
-  <span>Blurt v0.1.0 · 离线运行，语音与文本永不离开这台电脑</span>
+  <span id="privacyText">Blurt v0.1.0 · 本地模式离线运行</span>
   <button class="btn ghost" id="btnOpenLogs" type="button">打开日志目录</button>
 </footer>
 

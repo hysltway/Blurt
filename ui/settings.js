@@ -6,6 +6,7 @@ const { listen } = window.__TAURI__.event;
 
 let cfg = null;
 let saveTimer = null;
+let apiKeyState = { configured: false, error: null };
 
 const $ = id => document.getElementById(id);
 
@@ -99,13 +100,25 @@ function setupBench() {
   });
 }
 
-/* ---------- 引擎状态（页头胶囊 + 引擎卡横幅） ---------- */
-const PILL_TEXT = { ready: '就绪', loading: '加载中…', missing: '缺少模型', failed: '加载失败' };
+/* ---------- 引擎状态（页头胶囊 + 当前后端） ---------- */
+const LOCAL_PILL_TEXT = { ready: '就绪', loading: '加载中…', missing: '缺少模型', failed: '加载失败' };
+const API_PILL_TEXT = { ready: 'API 就绪', loading: '连接中…', missing: '缺少密钥', failed: '凭据错误' };
 
 function renderEngine(st) {
   const dotCls = { ready: 'ok', loading: 'loading', missing: 'missing' }[st.state] || 'err';
+  const pillText = st.provider === 'doubao' ? API_PILL_TEXT : LOCAL_PILL_TEXT;
   $('pillDot').className = 'dot ' + dotCls;
-  $('pillText').textContent = PILL_TEXT[st.state] || PILL_TEXT.failed;
+  $('pillText').textContent = pillText[st.state] || pillText.failed;
+
+  if (st.provider === 'doubao') {
+    $('apiDot').className = 'dot ' + dotCls;
+    $('apiBanner').className = 'model-banner ' + dotCls;
+    $('apiStatusText').textContent = st.state === 'ready'
+      ? 'API Key 已就绪 · 豆包流式语音识别 1.0'
+      : (st.detail || '请先保存 API Key');
+    return;
+  }
+
   $('modelDot').className = 'dot ' + dotCls;
   $('modelBanner').className = 'model-banner ' + dotCls;
 
@@ -134,8 +147,23 @@ function renderEngine(st) {
   $('stats').textContent = s.join(' · ');
 }
 
+function renderBackendPanels() {
+  const apiMode = cfg.recognition_mode === 'doubao';
+  $('localEnginePanel').hidden = apiMode;
+  $('doubaoEnginePanel').hidden = !apiMode;
+  $('engineTag').textContent = apiMode ? 'DOUBAO ASR 1.0' : 'QWEN3-ASR-0.6B';
+  $('privacyText').textContent = apiMode
+    ? 'Blurt v0.1.0 · API 模式会将录音发送至豆包语音服务'
+    : 'Blurt v0.1.0 · 本地模式离线运行';
+  const keyInput = $('doubaoApiKey');
+  keyInput.placeholder = apiKeyState.configured ? '已安全保存' : '输入豆包 API Key';
+  $('btnRemoveApiKey').style.display = apiKeyState.configured ? '' : 'none';
+}
+
 /* ---------- 渲染 ---------- */
 function render() {
+  const recognition = document.querySelector(`#recognitionSeg input[value="${cfg.recognition_mode}"]`);
+  if (recognition) recognition.checked = true;
   const radio = document.querySelector(`#injectSeg input[value="${cfg.inject_mode}"]`);
   if (radio) radio.checked = true;
   $('autostart').checked = cfg.autostart;
@@ -145,6 +173,12 @@ function render() {
   $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
   $('autoStop').value = cfg.auto_stop_secs;
   $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
+  renderBackendPanels();
+}
+
+async function refreshApiKeyState() {
+  apiKeyState = await invoke('doubao_api_key_status');
+  renderBackendPanels();
 }
 
 async function loadMics() {
@@ -163,6 +197,15 @@ async function loadMics() {
 
 /* ---------- 事件绑定 ---------- */
 function bind() {
+  for (const r of document.querySelectorAll('#recognitionSeg input')) {
+    r.addEventListener('change', async e => {
+      if (!e.target.checked) return;
+      cfg.recognition_mode = e.target.value;
+      renderBackendPanels();
+      save(true);
+      setTimeout(async () => renderEngine(await invoke('engine_status')), 80);
+    });
+  }
   for (const r of document.querySelectorAll('#injectSeg input')) {
     r.addEventListener('change', e => {
       if (e.target.checked) { cfg.inject_mode = e.target.value; save(); }
@@ -181,6 +224,34 @@ function bind() {
     cfg.auto_stop_secs = parseFloat(e.target.value);
     $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
     save();
+  });
+
+  const saveApiKey = async () => {
+    const input = $('doubaoApiKey');
+    const apiKey = input.value.trim();
+    if (!apiKey) {
+      toast('请输入 API Key');
+      return;
+    }
+    try {
+      await invoke('set_doubao_api_key', { apiKey });
+      input.value = '';
+      await refreshApiKeyState();
+      renderEngine(await invoke('engine_status'));
+      toast('API Key 已安全保存');
+    } catch (e) {
+      toast(String(e));
+    }
+  };
+  $('btnSaveApiKey').addEventListener('click', saveApiKey);
+  $('doubaoApiKey').addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveApiKey();
+  });
+  $('btnRemoveApiKey').addEventListener('click', async () => {
+    await invoke('set_doubao_api_key', { apiKey: '' });
+    await refreshApiKeyState();
+    renderEngine(await invoke('engine_status'));
+    toast('API Key 已移除');
   });
 
   $('btnReload').addEventListener('click', async () => {
@@ -204,6 +275,7 @@ function bind() {
 /* ---------- 启动 ---------- */
 (async function init() {
   cfg = await invoke('get_config');
+  apiKeyState = await invoke('doubao_api_key_status');
   render();
   bind();
   setupBench();

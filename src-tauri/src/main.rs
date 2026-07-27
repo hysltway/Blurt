@@ -8,6 +8,7 @@ mod asr;
 mod audio;
 mod commands;
 mod config;
+mod doubao;
 mod hotkey;
 mod hud;
 mod inject;
@@ -42,6 +43,13 @@ fn main() {
     }
 
     init_logging();
+    // 支持部署脚本一次性注入密钥；读取后立刻从进程环境移除。
+    if let Ok(api_key) = std::env::var("BLURT_DOUBAO_API_KEY") {
+        if let Err(e) = config::save_doubao_api_key(&api_key) {
+            tracing::error!("保存环境变量提供的豆包 API Key 失败：{e:#}");
+        }
+        std::env::remove_var("BLURT_DOUBAO_API_KEY");
+    }
     let cfg = config::load();
 
     let app = tauri::Builder::default()
@@ -57,6 +65,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,
+            commands::doubao_api_key_status,
+            commands::set_doubao_api_key,
             commands::list_input_devices,
             commands::engine_status,
             commands::reload_engine,
