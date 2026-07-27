@@ -23,6 +23,9 @@ pub const TARGET_SR_F: f32 = audio::TARGET_SR as f32;
 const TAP_MS: u128 = 350;
 /// 有效语音的最短时长（裁剪后）
 const MIN_SPEECH_S: f32 = 0.35;
+/// 仅保留足以触发长音频问题的真实录音，避免无界增长与无意义的隐私留存。
+const LONG_RECORDING_MIN_S: f32 = 20.0;
+const LONG_RECORDING_KEEP: usize = 5;
 
 pub enum Session {
     Idle,
@@ -386,8 +389,13 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
         }
     };
 
+    let raw_s = samples.len() as f32 / TARGET_SR_F;
+    // 保存的是静音裁剪前的真实采集音频，未来 --selftest 会重走同一裁剪管线。
+    // 仅长录音需要克隆；几 MB 的短期内存换取无损、可复现的诊断样本。
+    let retained_recording = (raw_s >= LONG_RECORDING_MIN_S).then(|| samples.clone());
     let speech = audio::trim_silence(samples);
     let speech_s = speech.len() as f32 / TARGET_SR_F;
+    let retained_recording = retained_recording.filter(|_| speech_s >= LONG_RECORDING_MIN_S);
     if speech_s < MIN_SPEECH_S {
         // 没听到有效语音：灰色塌陷提示，而非报错
         hud::emit_state(app, "nothing", None);
@@ -469,6 +477,20 @@ pub fn on_audio_ready(app: &AppHandle, gen: u64, res: Result<Vec<f32>, String>) 
                 tracing::error!("识别失败：{e:#}");
                 hud::emit_state(&app, "error", None);
                 finish_session(&app, gen, 1100, "Blurt · 识别失败");
+            }
+        }
+
+        // 放在识别结果注入之后，写盘和旧文件清理不会增加用户等待时间。
+        if let Some(recording) = retained_recording {
+            let dir = config::logs_dir().join("recordings");
+            match audio::save_recent_recording(&recording, &dir, LONG_RECORDING_KEEP) {
+                Ok(path) => tracing::info!(
+                    "已保留长录音样本（原始 {:.2}s，有效 {:.2}s）：{}",
+                    raw_s,
+                    speech_s,
+                    path.display()
+                ),
+                Err(e) => tracing::warn!("保留长录音样本失败：{e}"),
             }
         }
     });

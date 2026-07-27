@@ -9,13 +9,18 @@ use parking_lot::Mutex;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const TARGET_SR: u32 = 16000;
 
 /// SincFixedIn 的固定输入块大小（源采样率下的样本数）
 const RS_CHUNK: usize = 1024;
+const LONG_RECORDING_PREFIX: &str = "long-";
+static RECORDING_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StopMode {
@@ -338,6 +343,85 @@ pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>, String> {
     Ok(to_16k(&mono, spec.sample_rate))
 }
 
+/// 将真实采集到的 16kHz 单声道样本保存为 float WAV，并滚动保留最近 `keep` 条。
+/// float WAV 避免诊断样本发生二次量化，之后可直接交给 `--selftest` 重放完整管线。
+pub fn save_recent_recording(samples: &[f32], dir: &Path, keep: usize) -> Result<PathBuf, String> {
+    if samples.is_empty() {
+        return Err("录音样本为空".into());
+    }
+    if keep == 0 {
+        return Err("录音保留数量必须大于 0".into());
+    }
+
+    fs::create_dir_all(dir).map_err(|e| format!("创建录音留存目录失败：{e}"))?;
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let seq = RECORDING_SEQ.fetch_add(1, Ordering::Relaxed);
+    let duration_ms = samples.len() as u64 * 1000 / TARGET_SR as u64;
+    let file_name = format!(
+        "{LONG_RECORDING_PREFIX}{now_ms:013}-{:05}-{seq:06}-{duration_ms}ms.wav",
+        std::process::id()
+    );
+    let path = dir.join(&file_name);
+    let temp_path = dir.join(format!(".{file_name}.tmp"));
+
+    let write_result = (|| -> Result<(), String> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: TARGET_SR,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&temp_path, spec)
+            .map_err(|e| format!("创建录音 WAV 失败：{e}"))?;
+        for &sample in samples {
+            writer
+                .write_sample(sample)
+                .map_err(|e| format!("写入录音 WAV 失败：{e}"))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| format!("完成录音 WAV 失败：{e}"))
+    })();
+
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&temp_path, &path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("提交录音 WAV 失败：{e}"));
+    }
+
+    let mut recordings: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| format!("读取录音留存目录失败：{e}"))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate.extension().and_then(|s| s.to_str()) == Some("wav")
+                && candidate
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|name| name.starts_with(LONG_RECORDING_PREFIX))
+        })
+        .collect();
+    recordings.sort();
+
+    let remove_count = recordings.len().saturating_sub(keep);
+    for stale in recordings
+        .into_iter()
+        .filter(|candidate| candidate != &path)
+        .take(remove_count)
+    {
+        fs::remove_file(&stale).map_err(|e| format!("清理旧录音 {} 失败：{e}", stale.display()))?;
+    }
+
+    Ok(path)
+}
+
 /// 单声道任意采样率 → 16kHz（rubato sinc 重采样）
 pub fn to_16k(mono: &[f32], sr: u32) -> Vec<f32> {
     if sr == TARGET_SR {
@@ -596,6 +680,45 @@ mod tests {
         let mut s = sine(16000, TARGET_SR);
         s[8000] = f32::NAN;
         let _ = trim_silence(s);
+    }
+
+    #[test]
+    fn recent_recordings_are_lossless_and_pruned() {
+        let unique = RECORDING_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "blurt-recording-test-{}-{unique}",
+            std::process::id()
+        ));
+        let samples = vec![-0.75f32, -0.25, 0.0, 0.25, 0.75];
+        let mut paths = Vec::new();
+
+        for _ in 0..6 {
+            paths.push(save_recent_recording(&samples, &dir, 5).expect("保存诊断录音"));
+        }
+
+        let wavs: Vec<_> = fs::read_dir(&dir)
+            .expect("读取测试目录")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("wav"))
+            .collect();
+        assert_eq!(wavs.len(), 5);
+        assert!(!paths[0].exists());
+        assert!(paths[5].exists());
+
+        let mut reader = hound::WavReader::open(&paths[5]).expect("打开诊断 WAV");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, TARGET_SR);
+        assert_eq!(spec.bits_per_sample, 32);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+        let decoded: Vec<f32> = reader
+            .samples::<f32>()
+            .collect::<Result<_, _>>()
+            .expect("读取诊断 WAV 样本");
+        assert_eq!(decoded, samples);
+
+        fs::remove_dir_all(dir).expect("清理测试目录");
     }
 
     /* ---------------- SilenceGate ---------------- */

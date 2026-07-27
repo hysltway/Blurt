@@ -10,6 +10,22 @@ use sherpa_onnx::{
     OfflineModelConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
 };
 
+const SPLIT_TRIGGER_S: f32 = 28.0;
+const MAX_CHUNK_S: f32 = 24.0;
+const MIN_CHUNK_S: f32 = 8.0;
+const CUT_SEARCH_S: f32 = 2.5;
+const FORCED_OVERLAP_S: f32 = 0.3;
+const CUT_FRAME: usize = 320; // 20ms @16kHz
+const CUT_SMOOTH_FRAMES: usize = 5;
+const MAX_DEDUP_CHARS: usize = 24;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioChunk {
+    start: usize,
+    end: usize,
+    overlap_with_previous: bool,
+}
+
 pub struct AsrEngine {
     rec: Mutex<OfflineRecognizer>,
     pub model_dir: PathBuf,
@@ -115,14 +131,50 @@ impl AsrEngine {
     /// 输入 16kHz 单声道，返回 (文本, 耗时秒)
     pub fn transcribe(&self, samples: &[f32]) -> Result<(String, f64)> {
         let t0 = Instant::now();
+        let chunks = plan_audio_chunks(samples);
         let rec = self.rec.lock();
-        let stream = rec.create_stream();
-        stream.accept_waveform(crate::audio::TARGET_SR as i32, samples);
-        rec.decode(&stream);
-        let mut text = stream
-            .get_result()
-            .map(|r| r.text.trim().to_string())
-            .context("读取识别结果失败")?;
+        if chunks.len() > 1 {
+            let durations = chunks
+                .iter()
+                .map(|chunk| {
+                    format!(
+                        "{:.2}s{}",
+                        (chunk.end - chunk.start) as f32 / crate::audio::TARGET_SR as f32,
+                        if chunk.overlap_with_previous {
+                            "+重叠"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" / ");
+            tracing::info!(
+                "长音频分段识别：{:.2}s -> {} 段（{}）",
+                samples.len() as f32 / crate::audio::TARGET_SR as f32,
+                chunks.len(),
+                durations
+            );
+        }
+
+        let mut text = String::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let chunk_t0 = Instant::now();
+            let part = decode_chunk(&rec, &samples[chunk.start..chunk.end])
+                .with_context(|| format!("识别长音频片段 {}/{} 失败", i + 1, chunks.len()))?;
+            if chunks.len() > 1 {
+                tracing::info!(
+                    "长音频片段 {}/{} 完成 {:.2}s（音频 {:.2}s，输出 {} 字）",
+                    i + 1,
+                    chunks.len(),
+                    chunk_t0.elapsed().as_secs_f64(),
+                    (chunk.end - chunk.start) as f32 / crate::audio::TARGET_SR as f32,
+                    part.chars().count()
+                );
+            }
+            append_chunk_text(&mut text, &part, chunk.overlap_with_previous);
+        }
+
         for (from, to) in &self.replaces {
             text = replace_term_ci(&text, from, to);
         }
@@ -134,6 +186,201 @@ impl AsrEngine {
         let silence = vec![0.0f32; 8000];
         let _ = self.transcribe(&silence);
     }
+}
+
+fn decode_chunk(rec: &OfflineRecognizer, samples: &[f32]) -> Result<String> {
+    let stream = rec.create_stream();
+    stream.accept_waveform(crate::audio::TARGET_SR as i32, samples);
+    rec.decode(&stream);
+    stream
+        .get_result()
+        .map(|r| r.text.trim().to_string())
+        .context("读取识别结果失败")
+}
+
+fn plan_audio_chunks(samples: &[f32]) -> Vec<AudioChunk> {
+    let sr = crate::audio::TARGET_SR as usize;
+    let split_trigger = (SPLIT_TRIGGER_S * sr as f32) as usize;
+    if samples.len() <= split_trigger {
+        return vec![AudioChunk {
+            start: 0,
+            end: samples.len(),
+            overlap_with_previous: false,
+        }];
+    }
+
+    let max_chunk = (MAX_CHUNK_S * sr as f32) as usize;
+    let min_chunk = (MIN_CHUNK_S * sr as f32) as usize;
+    let search = (CUT_SEARCH_S * sr as f32) as usize;
+    let overlap = (FORCED_OVERLAP_S * sr as f32) as usize;
+    let chunk_count = samples.len().div_ceil(max_chunk);
+
+    let energies: Vec<f32> = samples
+        .chunks(CUT_FRAME)
+        .map(|frame| {
+            let sum: f64 = frame
+                .iter()
+                .map(|&sample| sample as f64 * sample as f64)
+                .sum();
+            (sum / frame.len() as f64).sqrt() as f32
+        })
+        .collect();
+    let mut sorted = energies.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let floor = sorted[sorted.len() / 10];
+    let median = sorted[sorted.len() / 2];
+    let quiet_threshold = (floor * 1.8).min(median * 0.45).max(0.004);
+
+    let mut boundaries: Vec<(usize, bool)> = Vec::with_capacity(chunk_count - 1);
+    let mut previous_cut = 0usize;
+    for chunks_left in (2..=chunk_count).rev() {
+        let remaining = samples.len() - previous_cut;
+        let remaining_after = chunks_left - 1;
+        let hard_min = (previous_cut + min_chunk)
+            .max(samples.len().saturating_sub(remaining_after * max_chunk));
+        let hard_max = (previous_cut + max_chunk)
+            .min(samples.len().saturating_sub(remaining_after * min_chunk));
+        let ideal = (previous_cut + remaining / chunks_left).clamp(hard_min, hard_max);
+        let search_min = hard_min.max(ideal.saturating_sub(search));
+        let search_max = hard_max.min(ideal.saturating_add(search));
+        let (cut, quiet) = choose_cut(&energies, ideal, search_min, search_max, quiet_threshold);
+        boundaries.push((cut, quiet));
+        previous_cut = cut;
+    }
+
+    let mut chunks: Vec<AudioChunk> = Vec::with_capacity(chunk_count);
+    let mut start = 0usize;
+    for (cut, quiet) in boundaries {
+        let overlap_with_previous = chunks.last().is_some_and(|previous| start < previous.end);
+        chunks.push(AudioChunk {
+            start,
+            end: cut,
+            overlap_with_previous,
+        });
+        start = if quiet {
+            cut
+        } else {
+            cut.saturating_sub(overlap)
+        };
+    }
+    let overlap_with_previous = chunks.last().is_some_and(|previous| start < previous.end);
+    chunks.push(AudioChunk {
+        start,
+        end: samples.len(),
+        overlap_with_previous,
+    });
+    chunks
+}
+
+fn choose_cut(
+    energies: &[f32],
+    ideal_sample: usize,
+    min_sample: usize,
+    max_sample: usize,
+    quiet_threshold: f32,
+) -> (usize, bool) {
+    let first_frame = min_sample.div_ceil(CUT_FRAME).max(1);
+    let last_frame = (max_sample / CUT_FRAME).min(energies.len().saturating_sub(1));
+    let ideal_frame = ideal_sample / CUT_FRAME;
+
+    let candidates: Vec<(usize, f32)> = (first_frame..=last_frame)
+        .map(|frame| (frame, smoothed_energy(energies, frame)))
+        .collect();
+    if let Some(&(frame, _)) = candidates
+        .iter()
+        .filter(|(_, energy)| *energy <= quiet_threshold)
+        .min_by(|(a_frame, a_energy), (b_frame, b_energy)| {
+            a_frame
+                .abs_diff(ideal_frame)
+                .cmp(&b_frame.abs_diff(ideal_frame))
+                .then_with(|| a_energy.total_cmp(b_energy))
+        })
+    {
+        return (frame * CUT_FRAME, true);
+    }
+
+    let frame = candidates
+        .iter()
+        .min_by(|(a_frame, a_energy), (b_frame, b_energy)| {
+            a_energy.total_cmp(b_energy).then_with(|| {
+                a_frame
+                    .abs_diff(ideal_frame)
+                    .cmp(&b_frame.abs_diff(ideal_frame))
+            })
+        })
+        .map_or(ideal_frame, |(frame, _)| *frame);
+    ((frame * CUT_FRAME).clamp(min_sample, max_sample), false)
+}
+
+fn smoothed_energy(energies: &[f32], center: usize) -> f32 {
+    let radius = CUT_SMOOTH_FRAMES / 2;
+    let start = center.saturating_sub(radius);
+    let end = (center + radius + 1).min(energies.len());
+    energies[start..end].iter().sum::<f32>() / (end - start) as f32
+}
+
+fn append_chunk_text(combined: &mut String, part: &str, overlapped: bool) {
+    let mut part = part.trim();
+    if part.is_empty() {
+        return;
+    }
+    if combined.is_empty() {
+        combined.push_str(part);
+        return;
+    }
+
+    if overlapped {
+        if let Some(prefix_end) = overlap_prefix_end(combined, part) {
+            part = part[prefix_end..].trim_start();
+            if part.is_empty() {
+                return;
+            }
+        }
+    }
+
+    let left = combined.chars().next_back();
+    let right = part.chars().next();
+    if left.is_some_and(|c| c.is_ascii_alphanumeric())
+        && right.is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        combined.push(' ');
+    }
+    combined.push_str(part);
+}
+
+fn overlap_prefix_end(left: &str, right: &str) -> Option<usize> {
+    let left_chars = significant_chars(left);
+    let right_chars = significant_chars(right);
+    let max = left_chars.len().min(right_chars.len()).min(MAX_DEDUP_CHARS);
+
+    for len in (2..=max).rev() {
+        let left_start = left_chars.len() - len;
+        if left_chars[left_start..]
+            .iter()
+            .map(|(c, _)| c)
+            .eq(right_chars[..len].iter().map(|(c, _)| c))
+        {
+            return Some(right_chars[len - 1].1);
+        }
+    }
+    None
+}
+
+fn significant_chars(text: &str) -> Vec<(char, usize)> {
+    text.char_indices()
+        .filter_map(|(start, c)| {
+            (!is_merge_punctuation(c)).then_some((c.to_ascii_lowercase(), start + c.len_utf8()))
+        })
+        .collect()
+}
+
+fn is_merge_punctuation(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_ascii_punctuation()
+        || matches!(
+            c,
+            '，' | '。' | '！' | '？' | '；' | '：' | '、' | '“' | '”' | '‘' | '’'
+        )
 }
 
 /// 大小写不敏感（仅 ASCII 折叠）的整词替换。
@@ -223,5 +470,44 @@ mod tests {
         // 未命中整词边界时跨多字节字符推进不得 panic
         assert_eq!(replace_term_ci("云cloud云", "云cloud云", "x"), "x");
         assert_eq!(replace_term_ci("abc云", "云", "雲"), "abc雲");
+    }
+
+    #[test]
+    fn long_audio_prefers_silent_balanced_boundaries() {
+        let sr = crate::audio::TARGET_SR as usize;
+        let samples = vec![0.0f32; ((SPLIT_TRIGGER_S + 2.0) as usize) * sr];
+        let chunks = plan_audio_chunks(&samples);
+
+        assert_eq!(chunks.len(), 2);
+        assert!(!chunks[1].overlap_with_previous);
+        assert_eq!(chunks[0].end, chunks[1].start);
+        assert_eq!(chunks[0].start, 0);
+        assert_eq!(chunks[1].end, samples.len());
+        assert!(chunks.iter().all(|chunk| {
+            chunk.end - chunk.start <= (MAX_CHUNK_S * crate::audio::TARGET_SR as f32) as usize
+        }));
+    }
+
+    #[test]
+    fn continuous_audio_uses_small_overlap_at_forced_boundary() {
+        let sr = crate::audio::TARGET_SR as usize;
+        let samples = vec![0.1f32; ((SPLIT_TRIGGER_S + 2.0) as usize) * sr];
+        let chunks = plan_audio_chunks(&samples);
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[1].overlap_with_previous);
+        assert!(chunks[1].start < chunks[0].end);
+        assert!(chunks[0].end - chunks[1].start <= (FORCED_OVERLAP_S * sr as f32) as usize);
+    }
+
+    #[test]
+    fn overlapped_text_is_deduplicated_without_breaking_punctuation() {
+        let mut combined = "前半段然后".to_string();
+        append_chunk_text(&mut combined, "然后，继续", true);
+        assert_eq!(combined, "前半段然后，继续");
+
+        let mut english = "hello".to_string();
+        append_chunk_text(&mut english, "world", false);
+        assert_eq!(english, "hello world");
     }
 }
