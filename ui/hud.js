@@ -4,7 +4,7 @@
  * 整体形态 = 中央穹顶（两头窄、中间高），峰高由降噪后的实时响度决定；
  * 内部起伏 = 共同的行进大波 + 绸缕分层错相（层次感），响度越大布面张得越开：
  *   listen   聆听中（能量撑开丝波振幅 —— “它听到我了”）
- *   process  识别中（双频驻波拍频 + 噪声交错：有节奏但不规整的此起彼伏，色相随进度滑向绿色）
+ *   process  识别中（双频驻波拍频 + 噪声交错：有节奏但不规整的靛紫起伏）
  *   success  完成（丝波收拢成绿色亮线，脉冲）
  *   error    出错（红色高频躁动 + 抖动）
  *   nothing  没听到有效语音（灰色塌陷）
@@ -26,12 +26,12 @@ const SPREAD = 22;               // 布面纵向厚度（绸缕基线散布）
 
 /* 每状态一对色（深部/亮部），绸缕在两色间渐变，加色叠出高光 */
 const COL = {
-  bar:   { deep: [56, 58, 228], light: [150, 156, 255] },  // GIF 主体深蓝 → 紫蓝亮部
-  think: { deep: [98, 88, 242], light: [182, 172, 255] },  // 思考靛紫
-  ok:    { deep: [34, 180, 115], light: [150, 240, 190] }, // 成功绿
-  err:   { deep: [226, 62, 72], light: [255, 152, 152] },  // 错误红
-  quiet: { deep: [116, 122, 138], light: [190, 195, 205] },// 静默灰
-  amber: { deep: [222, 150, 40], light: [255, 216, 140] }, // 加载琥珀
+  bar:   { deep: [56, 58, 228], light: [150, 156, 255] },  // 聆听蓝紫
+  think: { deep: [98, 88, 242], light: [182, 172, 255] },  // 识别靛紫
+  ok:    { deep: [52, 101, 56], light: [157, 199, 163] },  // 完成绿
+  err:   { deep: [159, 47, 45], light: [225, 151, 149] },  // 错误红
+  quiet: { deep: [120, 119, 116], light: [199, 198, 194] },// 静默暖灰
+  amber: { deep: [149, 100, 0], light: [226, 198, 132] },  // 加载琥珀
 };
 
 const canvas = document.getElementById('c');
@@ -111,7 +111,7 @@ function setState(s, payload) {
   if (!running) { running = true; requestAnimationFrame(frame); }
 }
 
-/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行（驱动识别中的色相与流速） ---------- */
+/* ---------- 进度模型：eta 内缓动至 92%，之后缓慢爬行（驱动识别中的流速） ---------- */
 let procStart = 0;
 function currentProgress() {
   if (state !== 'process') return 0;
@@ -212,12 +212,8 @@ function frame() {
     tAmp = 1; tSpread = 1;
     tAMul = lerp(1, 0.55 + 0.16 * Math.sin(t * 2.6), quiet); // 久无声 → 呼吸提示
   } else if (state === 'process') {
-    // 无进度条：用色相渐变表达进度 —— 靛紫随完成度滑向绿色，success 时无缝接满绿
-    const p = currentProgress();
-    tPair = {
-      deep: mixCol(COL.think.deep, COL.ok.deep, p * 0.65),
-      light: mixCol(COL.think.light, COL.ok.light, p * 0.65),
-    };
+    // 识别中保持稳定靛紫；仅在 success 状态切换为绿色。
+    tPair = COL.think;
     tAmp = 1; tSpread = 1;
   } else if (state === 'success') {
     const k = easeOutCubic(clamp(te / 0.22, 0, 1));

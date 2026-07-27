@@ -15,24 +15,23 @@
     cursor: default;
   }
   canvas { display: block; }
-  /* 取消按钮：光标移入 HUD 时浮现（窗口右上角，深色小圆钮） */
+  /* 取消按钮：光标移入 HUD 时浮现 */
   #closeBtn {
     position: absolute;
-    left: 330px; top: 8px;       /* 窗口右上角 */
-    width: 22px; height: 22px;
+    left: 328px; top: 8px;
+    width: 24px; height: 24px;
     border-radius: 50%;
-    border: 1px solid rgba(148,163,255,0.28);
-    background: rgba(24,30,54,0.96);
-    color: #aab4d4;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.45);
-    font: 600 12px/20px "Segoe UI", system-ui, sans-serif;
+    border: 1px solid #d9d8d3;
+    background: #2f3437;
+    color: #f7f6f3;
+    font: 600 14px/21px "Bahnschrift", "Microsoft YaHei UI", sans-serif;
     text-align: center;
     padding: 0;
     cursor: pointer;
     opacity: 0;
     transform: scale(0.7);
     pointer-events: none;
-    transition: opacity 0.15s, transform 0.15s, background 0.15s, color 0.15s;
+    transition: opacity 0.15s, transform 0.15s, background-color 0.15s, color 0.15s;
   }
   #closeBtn.show {
     opacity: 1;
@@ -40,15 +39,21 @@
     pointer-events: auto;
   }
   #closeBtn:hover {
-    background: #dc2626;
-    color: #fff;
-    border-color: #dc2626;
+    background: #9f2f2d;
+    color: #fdebec;
+    border-color: #9f2f2d;
+  }
+
+  #closeBtn:focus-visible { outline: 2px solid #1f6c9f; outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #closeBtn { transition-duration: 1ms; }
   }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<button id="closeBtn" title="取消（Esc）">✕</button>
+<button id="closeBtn" type="button" title="取消（Esc）" aria-label="取消录音或识别">×</button>
 <script src="hud.js"></script>
 </body>
 </html>

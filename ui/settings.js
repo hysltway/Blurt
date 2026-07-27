@@ -36,12 +36,6 @@ function save(immediate = false) {
   else saveTimer = setTimeout(doSave, 350);
 }
 
-/* ---------- 滑条填充上色 ---------- */
-function paintRange(el) {
-  const p = (el.value - el.min) / (el.max - el.min) * 100;
-  el.style.setProperty('--p', p + '%');
-}
-
 function fmtAutoStop(v) {
   return v > 0 ? v + ' 秒' : '关闭';
 }
@@ -151,8 +145,6 @@ function render() {
   $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
   $('autoStop').value = cfg.auto_stop_secs;
   $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
-  paintRange($('maxRecord'));
-  paintRange($('autoStop'));
 }
 
 async function loadMics() {
@@ -183,13 +175,11 @@ function bind() {
   $('maxRecord').addEventListener('input', e => {
     cfg.max_record_secs = parseInt(e.target.value);
     $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
-    paintRange(e.target);
     save();
   });
   $('autoStop').addEventListener('input', e => {
     cfg.auto_stop_secs = parseFloat(e.target.value);
     $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
-    paintRange(e.target);
     save();
   });
 

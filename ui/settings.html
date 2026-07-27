@@ -8,27 +8,21 @@
 <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-<div class="glow" aria-hidden="true"></div>
-
-<header class="hero">
+<header class="app-header">
   <div class="brand">
-    <div class="logo" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" />
-        <path d="M5 11a7 7 0 0 0 14 0" />
-        <line x1="12" y1="18" x2="12" y2="21" />
-      </svg>
-    </div>
+    <div class="logo" aria-hidden="true">B</div>
     <div class="brand-text">
       <h1>Blurt</h1>
-      <p>完全离线的语音输入 · 数据不出本机</p>
+      <p>本地语音输入 / 设置</p>
     </div>
-    <div class="engine-pill" title="识别引擎状态">
+    <div class="engine-pill" title="识别引擎状态" role="status" aria-live="polite">
+      <span class="status-label">引擎</span>
       <span class="dot missing" id="pillDot"></span><span id="pillText">检查中…</span>
     </div>
   </div>
 
-  <div class="hotkey-hero">
+  <div class="command-bar">
+    <span class="command-label">全局快捷键</span>
     <div class="keycaps" aria-label="全局快捷键 Ctrl + Alt">
       <kbd>Ctrl</kbd><span class="plus">+</span><kbd>Alt</kbd>
     </div>
@@ -42,56 +36,49 @@
   </div>
 </header>
 
-<main>
+<main class="settings-grid">
   <!-- 输入 -->
-  <section class="card">
+  <section class="card card-input">
     <h2>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="6" width="18" height="12" rx="2.5" />
-        <path d="M7 10h.01M11 10h.01M15 10h.01M17 14H7" />
-      </svg>
-      输入
+      <span class="section-id" aria-hidden="true">01</span>
+      <span>输入</span>
     </h2>
-    <div class="row">
-      <label>文本注入方式<span class="desc">识别结果写入光标处的方式</span></label>
-      <div class="seg" id="injectSeg">
+    <div class="row row-stack">
+      <div class="field-label">文本注入方式<span class="desc">识别结果写入光标处的方式</span></div>
+      <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本注入方式">
         <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
         <label><input type="radio" name="injectMode" value="type" /><span>模拟键入</span></label>
         <label><input type="radio" name="injectMode" value="paste" /><span>粘贴</span></label>
       </div>
     </div>
-    <div class="row">
+    <div class="row row-toggle">
       <label>开机自启动<span class="desc">登录 Windows 后静默驻留托盘</span></label>
       <div class="switch">
-        <input type="checkbox" id="autostart" />
+        <input type="checkbox" id="autostart" aria-label="开机自启动" />
         <label class="slider" for="autostart"></label>
       </div>
     </div>
   </section>
 
   <!-- 语音 -->
-  <section class="card">
+  <section class="card card-voice">
     <h2>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" />
-        <path d="M5 11a7 7 0 0 0 14 0" />
-        <line x1="12" y1="18" x2="12" y2="21" />
-      </svg>
-      语音
+      <span class="section-id" aria-hidden="true">02</span>
+      <span>语音</span>
     </h2>
-    <div class="row">
-      <label>麦克风</label>
+    <div class="row row-stack">
+      <label for="micDevice">麦克风</label>
       <select id="micDevice"><option value="">系统默认</option></select>
     </div>
-    <div class="row">
-      <label>静音自动结束<span class="desc">轻点开始的录音，说完静音这么久自动识别</span></label>
+    <div class="row row-stack row-range">
+      <label for="autoStop">静音自动结束<span class="desc">轻点录音时，静音后自动识别</span></label>
       <div class="range-wrap">
         <input type="range" id="autoStop" min="0" max="6" step="0.5" />
         <span class="val" id="autoStopVal">2 秒</span>
       </div>
     </div>
-    <div class="row">
-      <label>最长录音时长<span class="desc">安全上限，超时自动开始识别</span></label>
+    <div class="row row-stack row-range">
+      <label for="maxRecord">最长录音时长<span class="desc">到达上限后自动开始识别</span></label>
       <div class="range-wrap">
         <input type="range" id="maxRecord" min="15" max="180" step="15" />
         <span class="val" id="maxRecordVal">120 秒</span>
@@ -100,16 +87,13 @@
   </section>
 
   <!-- 识别引擎 -->
-  <section class="card">
+  <section class="card card-engine">
     <h2>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="6" y="6" width="12" height="12" rx="2.5" />
-        <path d="M10 2v2.5M14 2v2.5M10 19.5V22M14 19.5V22M2 10h2.5M2 14h2.5M19.5 10H22M19.5 14H22" />
-      </svg>
-      识别引擎
+      <span class="section-id" aria-hidden="true">03</span>
+      <span>识别引擎</span>
       <span class="tag">Qwen3-ASR-0.6B</span>
     </h2>
-    <div class="model-banner" id="modelBanner">
+    <div class="model-banner" id="modelBanner" role="status" aria-live="polite">
       <span class="dot missing" id="modelDot"></span>
       <div class="model-info">
         <div id="modelText">正在检查模型…</div>
@@ -118,12 +102,12 @@
       <div class="stats" id="stats"></div>
     </div>
     <div class="btn-row">
-      <button class="btn" id="btnReload">重新加载</button>
-      <button class="btn" id="btnOpenModelDir">打开模型目录</button>
-      <button class="btn primary" id="btnCopyCmd" style="display:none">复制下载命令</button>
+      <button class="btn" id="btnReload" type="button">重新加载</button>
+      <button class="btn" id="btnOpenModelDir" type="button">打开模型目录</button>
+      <button class="btn primary" id="btnCopyCmd" type="button" style="display:none">复制下载命令</button>
     </div>
     <div class="row">
-      <label>推理线程<span class="desc">自动 = 按 CPU 核心数选择</span></label>
+      <label for="numThreads">推理线程<span class="desc">自动按 CPU 核心数选择</span></label>
       <select id="numThreads" class="slim">
         <option value="0">自动</option>
         <option value="2">2</option>
@@ -133,28 +117,28 @@
         <option value="12">12</option>
       </select>
     </div>
-    <div class="row col">
+    <div class="row col row-bench">
       <label>线程测速<span class="desc">实测各线程数的识别速度（约半分钟，期间 CPU 占用较高）</span></label>
       <div class="btn-row">
-        <button class="btn" id="btnBench">一键测速</button>
-        <button class="btn primary" id="btnApplyBest" style="display:none"></button>
+        <button class="btn" id="btnBench" type="button">一键测速</button>
+        <button class="btn primary" id="btnApplyBest" type="button" style="display:none"></button>
       </div>
-      <div class="bench-status" id="benchStatus"></div>
+      <div class="bench-status" id="benchStatus" role="status" aria-live="polite"></div>
       <table id="benchTable" style="display:none"></table>
     </div>
-    <div class="row col">
-      <label>热词<span class="desc">易被听错的专有名词，用逗号分隔；「错词=&gt;正词」可强制替换识别结果</span></label>
-      <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, cloud=>claude"></textarea>
+    <div class="row col row-hotwords">
+      <label for="hotwords">热词<span class="desc">专有名词用逗号分隔；「错词=&gt;正词」可强制替换</span></label>
+      <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, cloud=>claude" spellcheck="false"></textarea>
     </div>
   </section>
 </main>
 
 <footer>
   <span>Blurt v0.1.0 · 离线运行，语音与文本永不离开这台电脑</span>
-  <button class="btn ghost" id="btnOpenLogs">打开日志目录</button>
+  <button class="btn ghost" id="btnOpenLogs" type="button">打开日志目录</button>
 </footer>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script src="settings.js"></script>
 </body>
 </html>

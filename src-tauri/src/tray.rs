@@ -143,6 +143,6 @@ pub fn open_settings(app: &AppHandle) {
         .center()
         // 浅色主题 + 同色底（避免加载闪烁）
         .theme(Some(tauri::Theme::Light))
-        .background_color(tauri::webview::Color(238, 241, 246, 255))
+        .background_color(tauri::webview::Color(247, 246, 243, 255))
         .build();
 }
