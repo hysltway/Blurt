@@ -42,7 +42,7 @@ function fmtAutoStop(v) {
 }
 
 /* ---------- 豆包 API 状态 ---------- */
-const API_PILL_TEXT = { ready: 'API 就绪', loading: '连接中…', missing: '缺少密钥', failed: '凭据错误' };
+const API_PILL_TEXT = { ready: '已就绪', loading: '连接中…', missing: '未配置', failed: '凭据错误' };
 
 function renderEngine(st) {
   const dotCls = { ready: 'ok', loading: 'loading', missing: 'missing' }[st.state] || 'err';
@@ -51,8 +51,8 @@ function renderEngine(st) {
   $('apiDot').className = 'dot ' + dotCls;
   $('apiBanner').className = 'model-banner ' + dotCls;
   $('apiStatusText').textContent = st.state === 'ready'
-    ? 'API Key 已就绪 · 豆包流式语音识别 1.0'
-    : (st.detail || '请先保存 API Key');
+    ? 'API Key 已就绪'
+    : (st.detail || '请配置 API Key');
 }
 
 function renderApiKeyState() {

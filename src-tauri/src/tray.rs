@@ -146,12 +146,13 @@ pub fn open_settings(app: &AppHandle) {
     }
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Blurt 设置")
-        .inner_size(680.0, 860.0)
-        .resizable(false)
+        .inner_size(760.0, 720.0)
+        .min_inner_size(360.0, 480.0)
+        .resizable(true)
         .maximizable(false)
         .center()
         // 浅色主题 + 同色底（避免加载闪烁）
         .theme(Some(tauri::Theme::Light))
-        .background_color(tauri::webview::Color(247, 246, 243, 255))
+        .background_color(tauri::webview::Color(245, 245, 245, 255))
         .build();
 }

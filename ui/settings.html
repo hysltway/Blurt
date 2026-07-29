@@ -11,27 +11,15 @@
 <header class="app-header">
   <div class="brand">
     <div class="logo" aria-hidden="true">B</div>
-    <div class="brand-text">
-      <h1>Blurt</h1>
-      <p>语音输入 / 设置</p>
-    </div>
+    <h1>Blurt</h1>
     <div class="engine-pill" title="识别引擎状态" role="status" aria-live="polite">
-      <span class="status-label">引擎</span>
       <span class="dot missing" id="pillDot"></span><span id="pillText">检查中…</span>
     </div>
   </div>
 
   <div class="command-bar">
-    <span class="command-label">全局快捷键</span>
     <div class="keycaps" aria-label="全局快捷键 Ctrl + Alt">
       <kbd>Ctrl</kbd><span class="plus">+</span><kbd>Alt</kbd>
-    </div>
-    <div class="usage">
-      <span><b>按住</b>说话，松开出字</span>
-      <i class="sep"></i>
-      <span><b>轻点</b>开始 · 再点结束</span>
-      <i class="sep"></i>
-      <span><b>Esc</b>随时取消</span>
     </div>
   </div>
 </header>
@@ -40,11 +28,10 @@
   <!-- 输入 -->
   <section class="card card-input">
     <h2>
-      <span class="section-id" aria-hidden="true">01</span>
       <span>输入</span>
     </h2>
     <div class="row row-stack">
-      <div class="field-label">文本注入方式<span class="desc">识别结果写入光标处的方式</span></div>
+      <div class="field-label">识别结果写入光标处的方式</div>
       <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本注入方式">
         <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
         <label><input type="radio" name="injectMode" value="type" /><span>模拟键入</span></label>
@@ -52,7 +39,7 @@
       </div>
     </div>
     <div class="row row-toggle">
-      <label>开机自启动<span class="desc">登录 Windows 后静默驻留托盘</span></label>
+      <label for="autostart">登录 Windows 后静默驻留托盘</label>
       <div class="switch">
         <input type="checkbox" id="autostart" aria-label="开机自启动" />
         <label class="slider" for="autostart"></label>
@@ -63,7 +50,6 @@
   <!-- 语音 -->
   <section class="card card-voice">
     <h2>
-      <span class="section-id" aria-hidden="true">02</span>
       <span>语音</span>
     </h2>
     <div class="row row-stack">
@@ -71,14 +57,14 @@
       <select id="micDevice"><option value="">系统默认</option></select>
     </div>
     <div class="row row-stack row-range">
-      <label for="autoStop">说完自动结束<span class="desc">轻点录音时，检测到说完后自动识别</span></label>
+      <label for="autoStop">说完后自动识别</label>
       <div class="range-wrap">
         <input type="range" id="autoStop" min="0" max="6" step="0.5" />
         <span class="val" id="autoStopVal">2 秒</span>
       </div>
     </div>
     <div class="row row-stack row-range">
-      <label for="maxRecord">最长录音时长<span class="desc">到达上限后自动开始识别</span></label>
+      <label for="maxRecord">最长录音时长</label>
       <div class="range-wrap">
         <input type="range" id="maxRecord" min="15" max="180" step="15" />
         <span class="val" id="maxRecordVal">120 秒</span>
@@ -89,38 +75,33 @@
   <!-- 识别引擎 -->
   <section class="card card-engine">
     <h2>
-      <span class="section-id" aria-hidden="true">03</span>
       <span>识别引擎</span>
-      <span class="tag">DOUBAO ASR 1.0</span>
     </h2>
     <div class="engine-panel api-panel">
       <div class="model-banner" id="apiBanner" role="status" aria-live="polite">
         <span class="dot missing" id="apiDot"></span>
         <div class="model-info">
           <div id="apiStatusText">正在检查 API Key…</div>
-          <div class="path">流式语音识别 1.0 · 200 ms 实时分包</div>
         </div>
       </div>
       <div class="row row-stack api-credentials">
-        <label for="doubaoApiKey">API Key<span class="desc">保存在 Windows 凭据管理器</span></label>
+        <label for="doubaoApiKey">豆包 API Key</label>
         <div class="credential-line">
           <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
           <button class="btn primary" id="btnSaveApiKey" type="button">保存密钥</button>
           <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
         </div>
       </div>
-      <p class="privacy-note">录音会实时发送至豆包语音服务；API Key 仅保存在 Windows 凭据管理器。</p>
     </div>
 
     <div class="row col row-hotwords">
-      <label for="hotwords">热词<span class="desc">专有名词用逗号分隔；「错词=&gt;正词」可强制替换</span></label>
+      <label for="hotwords">热词</label>
       <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, cloud=>claude" spellcheck="false"></textarea>
     </div>
   </section>
 </main>
 
 <footer>
-  <span>Blurt v0.1.0 · 豆包 API 语音识别</span>
   <button class="btn ghost" id="btnOpenLogs" type="button">打开日志目录</button>
 </footer>
 
