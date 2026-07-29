@@ -10,13 +10,13 @@
 
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Manager};
 
-use crate::asr::EngineSlot;
 use crate::audio::{RecorderHandle, StopMode};
 use crate::config::{Config, Stats};
-use crate::{asr, audio, config, doubao, hotkey, hud, inject, tray};
+use crate::{audio, config, doubao, hotkey, hud, inject, tray};
 
 pub const TARGET_SR_F: f32 = audio::TARGET_SR as f32;
 
@@ -45,60 +45,34 @@ pub enum Session {
 
 pub struct AppState {
     pub config: RwLock<Config>,
-    pub engine: RwLock<EngineSlot>,
     pub session: Mutex<Session>,
     pub gen: AtomicU64,
     pub stats: Mutex<Stats>,
-    pub benching: AtomicBool,
 }
 
 impl AppState {
     pub fn new(config: Config) -> Self {
         Self {
             config: RwLock::new(config),
-            engine: RwLock::new(EngineSlot::Loading),
             session: Mutex::new(Session::Idle),
             gen: AtomicU64::new(0),
             stats: Mutex::new(config::load_stats()),
-            benching: AtomicBool::new(false),
         }
     }
 }
 
-/* ---------------- 引擎加载 ---------------- */
+/* ---------------- 豆包 API 状态 ---------------- */
 
-pub fn engine_status_dto(app: &AppHandle) -> serde_json::Value {
-    let state = app.state::<AppState>();
-    let stats = *state.stats.lock();
-    let cfg = state.config.read().clone();
-    if cfg.recognition_mode == "doubao" {
-        let (st, detail) = match config::load_doubao_api_key() {
-            Ok(Some(_)) => ("ready", "豆包流式语音识别 1.0".to_string()),
-            Ok(None) => ("missing", "请先保存 API Key".to_string()),
-            Err(e) => ("failed", format!("读取 API Key 失败：{e}")),
-        };
-        return serde_json::json!({
-            "state": st,
-            "detail": detail,
-            "provider": "doubao",
-            "model_dir": "",
-            "rtf": 0,
-            "last_ms": stats.last_ms,
-        });
-    }
-    let (st, detail, dir) = match &*state.engine.read() {
-        EngineSlot::Loading => ("loading", String::new(), String::new()),
-        EngineSlot::Ready(e) => ("ready", String::new(), e.model_dir.display().to_string()),
-        EngineSlot::Missing(d) => ("missing", String::new(), d.clone()),
-        EngineSlot::Failed(msg) => ("failed", msg.clone(), String::new()),
+pub fn engine_status_dto(_app: &AppHandle) -> serde_json::Value {
+    let (state, detail) = match config::load_doubao_api_key() {
+        Ok(Some(_)) => ("ready", "豆包流式语音识别 1.0".to_string()),
+        Ok(None) => ("missing", "请先保存 API Key".to_string()),
+        Err(error) => ("failed", format!("读取 API Key 失败：{error}")),
     };
     serde_json::json!({
-        "state": st,
+        "state": state,
         "detail": detail,
-        "provider": "local",
-        "model_dir": dir,
-        "rtf": stats.rtf_ema,
-        "last_ms": stats.last_ms,
+        "provider": "doubao",
     })
 }
 
@@ -107,66 +81,18 @@ pub(crate) fn emit_engine_status(app: &AppHandle) {
     let _ = app.emit("engine:status", engine_status_dto(app));
 }
 
-/// 后台加载（或重载）引擎。`open_settings_if_missing`：首次启动缺模型时弹设置页引导。
-pub fn spawn_engine_load(app: &AppHandle, open_settings_if_missing: bool) {
-    let state = app.state::<AppState>();
-    if state.config.read().recognition_mode == "doubao" {
-        // 释放可能已加载的本地模型；API 模式不占用近 1GB 模型内存。
-        *state.engine.write() = EngineSlot::Loading;
-        let configured = config::load_doubao_api_key().ok().flatten().is_some();
-        emit_engine_status(app);
-        if configured {
-            tray::set_tooltip(app, "Blurt · 就绪（豆包 API）");
-        } else {
-            tray::set_tooltip(app, "Blurt · 请在设置中配置豆包 API Key");
-            if open_settings_if_missing {
-                tray::open_settings(app);
-            }
-        }
-        return;
-    }
-    *state.engine.write() = EngineSlot::Loading;
+/// 刷新凭据状态；首次启动缺少 API Key 时打开设置页。
+pub fn refresh_api_status(app: &AppHandle, open_settings_if_missing: bool) {
+    let configured = config::load_doubao_api_key().ok().flatten().is_some();
     emit_engine_status(app);
-    tray::set_tooltip(app, "Blurt · 模型加载中…");
-
-    let app = app.clone();
-    std::thread::spawn(move || {
-        let state = app.state::<AppState>();
-        let cfg = state.config.read().clone();
-        let Some(dir) = config::resolve_model_dir(&cfg) else {
-            let expect = config::models_root().display().to_string();
-            *state.engine.write() = EngineSlot::Missing(expect);
-            emit_engine_status(&app);
-            tray::set_tooltip(&app, "Blurt · 未找到模型，请打开设置查看指引");
-            if open_settings_if_missing {
-                tray::open_settings(&app);
-            }
-            return;
-        };
-        tracing::info!("加载模型：{}", dir.display());
-        let t0 = Instant::now();
-        match asr::AsrEngine::load(&dir, cfg.num_threads, &cfg.hotwords) {
-            Ok(engine) => {
-                let engine = std::sync::Arc::new(engine);
-                // 先发布 Ready 再热身：用户立刻可以按键说话；若首次识别抢在
-                // 热身完成前到来，只是在引擎锁上排队，总耗时不变。
-                *state.engine.write() = EngineSlot::Ready(engine.clone());
-                emit_engine_status(&app);
-                tray::set_tooltip(&app, "Blurt · 就绪（按住 Ctrl+Alt 说话）");
-                tracing::info!(
-                    "模型就绪，耗时 {:.1}s（后台热身中）",
-                    t0.elapsed().as_secs_f64()
-                );
-                engine.warmup();
-            }
-            Err(e) => {
-                tracing::error!("模型加载失败：{e:#}");
-                *state.engine.write() = EngineSlot::Failed(format!("{e:#}"));
-                emit_engine_status(&app);
-                tray::set_tooltip(&app, "Blurt · 模型加载失败");
-            }
+    if configured {
+        tray::set_tooltip(app, "Blurt · 就绪（豆包 API）");
+    } else {
+        tray::set_tooltip(app, "Blurt · 请在设置中配置豆包 API Key");
+        if open_settings_if_missing {
+            tray::open_settings(app);
         }
-    });
+    }
 }
 
 /* ---------------- 热键事件 ---------------- */
@@ -183,22 +109,10 @@ pub fn hotkey_pressed(app: &AppHandle) {
     let mut session = state.session.lock();
 
     let act = match &mut *session {
-        Session::Idle => {
-            if state.config.read().recognition_mode == "doubao" {
-                match config::load_doubao_api_key() {
-                    Ok(Some(_)) => PressAction::Start,
-                    _ => PressAction::Flash("error", 1200, true),
-                }
-            } else {
-                match &*state.engine.read() {
-                    EngineSlot::Ready(_) => PressAction::Start,
-                    EngineSlot::Loading => PressAction::Flash("loading", 1400, false),
-                    EngineSlot::Missing(_) | EngineSlot::Failed(_) => {
-                        PressAction::Flash("error", 1000, true)
-                    }
-                }
-            }
-        }
+        Session::Idle => match config::load_doubao_api_key() {
+            Ok(Some(_)) => PressAction::Start,
+            _ => PressAction::Flash("error", 1200, true),
+        },
         Session::Recording {
             awaiting_release, ..
         } => {
@@ -309,12 +223,8 @@ fn finish_ui_cancel(app: &AppHandle) {
     tray::set_tooltip(app, ready_tooltip(app));
 }
 
-fn ready_tooltip(app: &AppHandle) -> &'static str {
-    if app.state::<AppState>().config.read().recognition_mode == "doubao" {
-        "Blurt · 就绪（豆包 API）"
-    } else {
-        "Blurt · 就绪（按住 Ctrl+Alt 说话）"
-    }
+fn ready_tooltip(_app: &AppHandle) -> &'static str {
+    "Blurt · 就绪（豆包 API）"
 }
 
 /* ---------------- 会话流转 ---------------- */
@@ -324,27 +234,23 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     let state = app.state::<AppState>();
     let gen = state.gen.fetch_add(1, Ordering::SeqCst) + 1;
     let cfg = state.config.read().clone();
-    let api_stream = if cfg.recognition_mode == "doubao" {
-        match config::load_doubao_api_key() {
-            Ok(Some(api_key)) => Some(doubao::Stream::start(api_key, cfg.hotwords.clone())),
-            Ok(None) => {
-                tracing::error!("豆包 API Key 未配置");
-                hud::emit_state(app, "error", None);
-                hud::hide_later(app, 1200, gen);
-                tray::open_settings(app);
-                return;
-            }
-            Err(e) => {
-                tracing::error!("读取豆包 API Key 失败：{e:#}");
-                hud::emit_state(app, "error", None);
-                hud::hide_later(app, 1200, gen);
-                return;
-            }
+    let api_stream = match config::load_doubao_api_key() {
+        Ok(Some(api_key)) => doubao::Stream::start(api_key, cfg.hotwords.clone()),
+        Ok(None) => {
+            tracing::error!("豆包 API Key 未配置");
+            hud::emit_state(app, "error", None);
+            hud::hide_later(app, 1200, gen);
+            tray::open_settings(app);
+            return;
         }
-    } else {
-        None
+        Err(e) => {
+            tracing::error!("读取豆包 API Key 失败：{e:#}");
+            hud::emit_state(app, "error", None);
+            hud::hide_later(app, 1200, gen);
+            return;
+        }
     };
-    let api_sender = api_stream.as_ref().map(doubao::Stream::audio_sender);
+    let api_sender = api_stream.audio_sender();
 
     // HUD 必须立刻出现 —— “它听到我了”
     hud::position_on_active_monitor(app);
@@ -352,15 +258,17 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     hud::emit_state(app, "listen", None);
     tray::set_tooltip(app, "Blurt · 正在聆听…（Esc 取消）");
 
-    // 静音端点检测（自动停止）：原始 RMS 域乘性噪声门（audio::SilenceGate），
-    // 纯环境噪音不算有声；仅对切换模式生效（见 auto_stop_session）。
-    // 本底种子来自上次学习结果（感知域持久化，换麦克风时 set_config 已重置），
-    // 学习成果每 0.5s 回写，随下次识别后的 save_stats 一并落盘。
+    // 自动停止由 16kHz 流上的 FSMN-VAD 驱动，RMS 只负责 HUD 与噪声统计。
+    // 神经 VAD 无法初始化时保留原 RMS 门作为兜底；两条路径都只在切换模式结束会话。
     let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
     let level_app = app.clone();
+    let sample_app = app.clone();
     let done_app = app.clone();
     let seed = audio::perceptual_to_rms(state.stats.lock().noise_floor.clamp(0.02, 0.4));
     let mut gate = audio::SilenceGate::new(auto_stop, seed);
+    let use_rms_fallback = Arc::new(AtomicBool::new(false));
+    let level_rms_fallback = Arc::clone(&use_rms_fallback);
+    let sample_rms_fallback = Arc::clone(&use_rms_fallback);
     let vad_t0 = Instant::now();
     let mut vad_tick = 0u32;
     let rec = audio::start_recording(
@@ -368,7 +276,8 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
         cfg.max_record_secs,
         move |rms| {
             hud::emit_level(&level_app, audio::perceptual_level(rms));
-            if gate.update(rms, vad_t0.elapsed().as_secs_f32()) {
+            let rms_stop = gate.update(rms, vad_t0.elapsed().as_secs_f32());
+            if level_rms_fallback.load(Ordering::Relaxed) && rms_stop {
                 auto_stop_session(&level_app, gen);
             }
             vad_tick += 1;
@@ -377,9 +286,30 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 level_app.state::<AppState>().stats.lock().noise_floor = mapped;
             }
         },
-        move |samples| {
-            if let Some(sender) = &api_sender {
-                sender.push(samples);
+        move || {
+            let mut endpoint = if auto_stop > 0.0 {
+                match crate::endpoint::SpeechEndpoint::create(auto_stop) {
+                    Ok(endpoint) => Some(endpoint),
+                    Err(error) => {
+                        tracing::error!("FSMN-VAD 不可用，自动暂停降级为 RMS 噪声门：{error:#}");
+                        sample_rms_fallback.store(true, Ordering::Relaxed);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            move |samples: &[f32]| {
+                match endpoint.as_mut().map(|endpoint| endpoint.update(samples)) {
+                    Some(Ok(true)) => auto_stop_session(&sample_app, gen),
+                    Some(Err(error)) => {
+                        tracing::error!("FSMN-VAD 运行失败，自动暂停降级为 RMS 噪声门：{error:#}");
+                        endpoint = None;
+                        sample_rms_fallback.store(true, Ordering::Relaxed);
+                    }
+                    _ => {}
+                }
+                api_sender.push(samples);
             }
         },
         move |res| on_audio_ready(&done_app, gen, res, api_stream),
@@ -408,7 +338,7 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     }
 }
 
-/// 静音端点触发的自动结束（录音线程回调里调用）。
+/// 语音端点触发的自动结束（录音线程回调里调用）。
 /// 仅切换模式生效：按住说话时松开按键就是明确的结束动作，不做自动打断。
 fn auto_stop_session(app: &AppHandle, gen: u64) {
     let state = app.state::<AppState>();
@@ -419,7 +349,7 @@ fn auto_stop_session(app: &AppHandle, gen: u64) {
             toggle_mode: true,
             ..
         } if *g == gen => {
-            tracing::info!("静音超时，自动结束录音进入识别");
+            tracing::info!("检测到用户说完，自动结束录音进入识别");
             stop_and_recognize(app, &mut session);
         }
         _ => {}
@@ -444,7 +374,7 @@ pub fn on_audio_ready(
     app: &AppHandle,
     gen: u64,
     res: Result<Vec<f32>, String>,
-    api_stream: Option<doubao::Stream>,
+    api_stream: doubao::Stream,
 ) {
     let state = app.state::<AppState>();
     {
@@ -470,7 +400,7 @@ pub fn on_audio_ready(
     };
 
     let raw_s = samples.len() as f32 / TARGET_SR_F;
-    // 保存的是静音裁剪前的真实采集音频，未来 --selftest 会重走同一裁剪管线。
+    // 保存静音裁剪前的真实采集音频，便于复现长音频问题。
     // 仅长录音需要克隆；几 MB 的短期内存换取无损、可复现的诊断样本。
     let retained_recording = (raw_s >= LONG_RECORDING_MIN_S).then(|| samples.clone());
     let speech = audio::trim_silence(samples);
@@ -483,39 +413,11 @@ pub fn on_audio_ready(
         return;
     }
 
-    // “还要多久”：按历史 RTF 预测识别耗时，交给 HUD 画进度
-    let eta_ms = if api_stream.is_some() {
-        1600
-    } else {
-        let stats = state.stats.lock();
-        ((speech_s as f64 * stats.rtf_ema as f64 * 1.15 + 0.35) * 1000.0).clamp(500.0, 20000.0)
-            as u64
-    };
-    hud::emit_state(app, "process", Some(eta_ms));
-
-    enum Backend {
-        Local(std::sync::Arc<asr::AsrEngine>),
-        Doubao(doubao::Stream),
-    }
-    let backend = match api_stream {
-        Some(stream) => Backend::Doubao(stream),
-        None => match &*state.engine.read() {
-            EngineSlot::Ready(engine) => Backend::Local(engine.clone()),
-            _ => {
-                hud::emit_state(app, "error", None);
-                finish_session(app, gen, 1000, "Blurt · 引擎不可用");
-                return;
-            }
-        },
-    };
+    hud::emit_state(app, "process", Some(1600));
 
     let app = app.clone();
     std::thread::spawn(move || {
-        let is_local = matches!(&backend, Backend::Local(_));
-        let result = match backend {
-            Backend::Local(engine) => engine.transcribe(&speech),
-            Backend::Doubao(stream) => stream.finish(),
-        };
+        let result = api_stream.finish();
         let state = app.state::<AppState>();
 
         // 识别期间可能被 Esc 取消
@@ -525,20 +427,9 @@ pub fn on_audio_ready(
 
         match result {
             Ok((text, elapsed)) => {
-                // 更新 RTF 滑动平均，供下次预测（落盘与广播挪到注入之后：
-                // %APPDATA% 写盘可能被实时防护放大到几十毫秒，不该挡住上屏）
-                let stats_now = {
-                    let mut stats = state.stats.lock();
-                    if is_local {
-                        let rtf = (elapsed / speech_s as f64) as f32;
-                        stats.rtf_ema = (stats.rtf_ema * 0.7 + rtf * 0.3).clamp(0.02, 2.0);
-                    }
-                    stats.last_ms = Some((elapsed * 1000.0) as u64);
-                    *stats
-                };
+                let stats_now = *state.stats.lock();
                 tracing::info!(
-                    "{}识别完成 {:.2}s（音频 {:.2}s）：{}",
-                    if is_local { "本地" } else { "豆包" },
+                    "豆包识别完成 {:.2}s（音频 {:.2}s）：{}",
                     elapsed,
                     speech_s,
                     text

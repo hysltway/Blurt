@@ -162,16 +162,20 @@ impl StreamResampler {
 /* ---------------- 录音 ---------------- */
 
 /// 启动录音线程。`on_level` 约 50Hz 回调每 tick 的原始 RMS（未做感知映射，
-/// 供调用方做 HUD 映射与静音端点检测）；
-/// `on_samples` 增量交付已经重采样为 16kHz 单声道的样本，供在线识别边录边传；
+/// 供调用方做 HUD 映射与噪声统计）；
+/// `make_on_samples` 在录音线程内创建增量样本处理器；处理器接收已经重采样为
+/// 16kHz 单声道的样本，供在线识别和语音端点检测；
 /// `on_done` 仅在 Finish（含超时自动结束）时回调，交付 16kHz 单声道样本。
-pub fn start_recording(
+pub fn start_recording<S>(
     device_name: Option<String>,
     max_secs: u64,
     mut on_level: impl FnMut(f32) + Send + 'static,
-    mut on_samples: impl FnMut(&[f32]) + Send + 'static,
+    make_on_samples: impl FnOnce() -> S + Send + 'static,
     on_done: impl FnOnce(Result<Vec<f32>, String>) + Send + 'static,
-) -> Result<RecorderHandle, String> {
+) -> Result<RecorderHandle, String>
+where
+    S: FnMut(&[f32]) + 'static,
+{
     let (stop_tx, stop_rx) = bounded::<StopMode>(2);
 
     std::thread::Builder::new()
@@ -279,6 +283,7 @@ pub fn start_recording(
                     return;
                 }
             };
+            let mut on_samples = make_on_samples();
             if let Err(e) = stream.play() {
                 on_done(Err(format!("无法启动录音：{e}")));
                 return;
@@ -345,6 +350,7 @@ pub fn start_recording(
 }
 
 /// 读取任意 wav → 16kHz 单声道 f32（自检与测速共用）
+#[cfg(test)]
 pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>, String> {
     let mut reader = hound::WavReader::open(path).map_err(|e| format!("打开 wav 失败：{e}"))?;
     let spec = reader.spec();
@@ -367,7 +373,7 @@ pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>, String> {
 }
 
 /// 将真实采集到的 16kHz 单声道样本保存为 float WAV，并滚动保留最近 `keep` 条。
-/// float WAV 避免诊断样本发生二次量化，之后可直接交给 `--selftest` 重放完整管线。
+/// float WAV 避免诊断样本发生二次量化，便于无损重放录音管线。
 pub fn save_recent_recording(samples: &[f32], dir: &Path, keep: usize) -> Result<PathBuf, String> {
     if samples.is_empty() {
         return Err("录音样本为空".into());
@@ -446,6 +452,7 @@ pub fn save_recent_recording(samples: &[f32], dir: &Path, keep: usize) -> Result
 }
 
 /// 单声道任意采样率 → 16kHz（rubato sinc 重采样）
+#[cfg(test)]
 pub fn to_16k(mono: &[f32], sr: u32) -> Vec<f32> {
     if sr == TARGET_SR {
         return mono.to_vec();
@@ -475,6 +482,7 @@ fn linear_resample(mono: &[f32], sr: u32) -> Vec<f32> {
 }
 
 /// 交错多声道 → 单声道
+#[cfg(test)]
 pub fn interleaved_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     if channels <= 1 {
         return samples.to_vec();

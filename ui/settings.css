@@ -288,39 +288,11 @@ input {
   gap: 10px;
 }
 
-.row-bench {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px 14px;
-}
-
-.row-bench > .btn-row {
-  padding: 0;
-}
-
-.row-bench > .bench-status,
-.row-bench > table {
-  grid-column: 1 / -1;
-}
-
 .row-hotwords {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(280px, 1.2fr);
   align-items: center;
   gap: 12px;
-}
-
-.source-row {
-  padding-top: 5px;
-}
-
-.seg.seg-two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.engine-panel[hidden] {
-  display: none;
 }
 
 .engine-panel {
@@ -584,10 +556,6 @@ input[type="range"]::-webkit-slider-thumb:active {
   flex: 1;
 }
 
-#modelText {
-  font-size: 12.5px;
-}
-
 .model-banner .path {
   margin-top: 2px;
   color: var(--muted);
@@ -595,16 +563,6 @@ input[type="range"]::-webkit-slider-thumb:active {
   font-size: 9.5px;
   line-height: 1.35;
   word-break: break-all;
-}
-
-.model-banner .stats {
-  flex: none;
-  color: var(--muted);
-  font-family: "Cascadia Mono", "SF Mono", monospace;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
 }
 
 .dot {
@@ -698,53 +656,6 @@ input[type="range"]::-webkit-slider-thumb:active {
   color: var(--ink);
 }
 
-/* Benchmark */
-.bench-status {
-  min-height: 1em;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-#benchTable {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-}
-
-#benchTable th,
-#benchTable td {
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-}
-
-#benchTable th {
-  color: var(--muted);
-  font-size: 10.5px;
-  font-weight: 500;
-}
-
-#benchTable tr.best td {
-  background: var(--green-bg);
-  color: var(--green-text);
-  font-weight: 600;
-}
-
-#benchTable tr.best td:first-child::after {
-  content: "最快";
-  margin-left: 7px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--green-bg);
-  color: var(--green-text);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  vertical-align: 1px;
-}
-
 /* Footer and feedback */
 footer {
   display: flex;
@@ -818,7 +729,6 @@ footer {
   }
 
   .card-voice .row-range,
-  .row-bench,
   .row-hotwords {
     display: flex;
     flex-direction: column;

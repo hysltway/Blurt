@@ -1,4 +1,4 @@
-//! Blurt — 完全离线的 Windows 语音输入工具
+//! Blurt — 基于豆包 API 的 Windows 语音输入工具
 //! 按住 Ctrl+Alt，说出想法，文字落进光标。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -6,16 +6,15 @@
 use tauri::Manager;
 
 mod app;
-mod asr;
 mod audio;
 mod autostart;
 mod commands;
 mod config;
 mod doubao;
+mod endpoint;
 mod hotkey;
 mod hud;
 mod inject;
-mod selftest;
 mod tray;
 
 fn init_logging() {
@@ -35,9 +34,6 @@ fn init_logging() {
 fn main() {
     // 命令行模式
     let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == "--selftest") {
-        std::process::exit(selftest::run(args.get(i + 1).cloned()));
-    }
     if args.iter().any(|a| a == "--list-mics") {
         for d in audio::list_input_devices() {
             println!("{d}");
@@ -72,13 +68,9 @@ fn main() {
             commands::set_doubao_api_key,
             commands::list_input_devices,
             commands::engine_status,
-            commands::reload_engine,
-            commands::open_model_dir,
             commands::open_log_dir,
-            commands::copy_text,
             commands::cancel_session,
             commands::get_noise_floor,
-            commands::bench_threads,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -98,8 +90,8 @@ fn main() {
                 tray::set_tooltip(&handle, &format!("Blurt · {e}"));
             }
 
-            // 后台加载引擎；首次缺模型 → 打开设置页引导
-            app::spawn_engine_load(&handle, true);
+            // 首次缺少 API Key 时打开设置页引导。
+            app::refresh_api_status(&handle, true);
 
             tracing::info!("Blurt 已启动");
             Ok(())

@@ -71,7 +71,7 @@
       <select id="micDevice"><option value="">系统默认</option></select>
     </div>
     <div class="row row-stack row-range">
-      <label for="autoStop">静音自动结束<span class="desc">轻点录音时，静音后自动识别</span></label>
+      <label for="autoStop">说完自动结束<span class="desc">轻点录音时，检测到说完后自动识别</span></label>
       <div class="range-wrap">
         <input type="range" id="autoStop" min="0" max="6" step="0.5" />
         <span class="val" id="autoStopVal">2 秒</span>
@@ -91,53 +91,9 @@
     <h2>
       <span class="section-id" aria-hidden="true">03</span>
       <span>识别引擎</span>
-      <span class="tag" id="engineTag">Qwen3-ASR-0.6B</span>
+      <span class="tag">DOUBAO ASR 1.0</span>
     </h2>
-    <div class="row row-stack source-row">
-      <div class="field-label">识别来源<span class="desc">本机离线处理，或调用豆包语音服务</span></div>
-      <div class="seg seg-two" id="recognitionSeg" role="radiogroup" aria-label="识别来源">
-        <label><input type="radio" name="recognitionMode" value="local" /><span>本地模型</span></label>
-        <label><input type="radio" name="recognitionMode" value="doubao" /><span>豆包 API</span></label>
-      </div>
-    </div>
-
-    <div class="engine-panel" id="localEnginePanel">
-      <div class="model-banner" id="modelBanner" role="status" aria-live="polite">
-        <span class="dot missing" id="modelDot"></span>
-        <div class="model-info">
-          <div id="modelText">正在检查模型…</div>
-          <div class="path" id="modelPath"></div>
-        </div>
-        <div class="stats" id="stats"></div>
-      </div>
-      <div class="btn-row">
-        <button class="btn" id="btnReload" type="button">重新加载</button>
-        <button class="btn" id="btnOpenModelDir" type="button">打开模型目录</button>
-        <button class="btn primary" id="btnCopyCmd" type="button" style="display:none">复制下载命令</button>
-      </div>
-      <div class="row">
-        <label for="numThreads">推理线程<span class="desc">自动按 CPU 核心数选择</span></label>
-        <select id="numThreads" class="slim">
-          <option value="0">自动</option>
-          <option value="2">2</option>
-          <option value="4">4</option>
-          <option value="6">6</option>
-          <option value="8">8</option>
-          <option value="12">12</option>
-        </select>
-      </div>
-      <div class="row col row-bench">
-        <label>线程测速<span class="desc">实测各线程数的识别速度（约半分钟，期间 CPU 占用较高）</span></label>
-        <div class="btn-row">
-          <button class="btn" id="btnBench" type="button">一键测速</button>
-          <button class="btn primary" id="btnApplyBest" type="button" style="display:none"></button>
-        </div>
-        <div class="bench-status" id="benchStatus" role="status" aria-live="polite"></div>
-        <table id="benchTable" style="display:none"></table>
-      </div>
-    </div>
-
-    <div class="engine-panel api-panel" id="doubaoEnginePanel" hidden>
+    <div class="engine-panel api-panel">
       <div class="model-banner" id="apiBanner" role="status" aria-live="polite">
         <span class="dot missing" id="apiDot"></span>
         <div class="model-info">
@@ -153,7 +109,7 @@
           <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
         </div>
       </div>
-      <p class="privacy-note">使用 API 时，录音会实时发送至豆包语音服务。</p>
+      <p class="privacy-note">录音会实时发送至豆包语音服务；API Key 仅保存在 Windows 凭据管理器。</p>
     </div>
 
     <div class="row col row-hotwords">
@@ -164,7 +120,7 @@
 </main>
 
 <footer>
-  <span id="privacyText">Blurt v0.1.0 · 本地模式离线运行</span>
+  <span>Blurt v0.1.0 · 豆包 API 语音识别</span>
   <button class="btn ghost" id="btnOpenLogs" type="button">打开日志目录</button>
 </footer>
 

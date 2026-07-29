@@ -1,0 +1,17 @@
+[package]
+name = "vad-burn"
+version = "0.1.3"
+edition = "2024"
+description = "Burn Flex CPU FSMN VAD"
+license = "MIT"
+repository = "https://github.com/di-osc/vad-burn"
+
+[dependencies]
+anyhow = "1"
+burn = { version = "0.21.0", default-features = false, features = ["std", "flex", "store", "simd"] }
+burn-flex = { version = "0.21.0", default-features = false, features = ["rayon"] }
+burn-store = "0.21.0"
+kaldi-native-fbank = { path = "../kaldi-native-fbank" }
+
+[lints.rust]
+unsafe_code = "forbid"

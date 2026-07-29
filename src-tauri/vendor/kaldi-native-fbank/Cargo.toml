@@ -1,0 +1,15 @@
+[package]
+name = "kaldi-native-fbank"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of kaldi-native-fbank"
+license = "MIT"
+repository = "https://github.com/RustedBytes/kaldi-native-fbank"
+
+[dependencies]
+rand = "0.8"
+realfft = "3.3"
+rustfft = "6.2"
+
+[lints.rust]
+unsafe_code = "forbid"

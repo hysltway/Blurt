@@ -15,7 +15,15 @@
   cargo test --manifest-path src-tauri/Cargo.toml
   ```
 
-  After completing each task — regardless of whether the change touched Rust or only `ui/` assets — rebuild the program, sync it into `dist\`, and relaunch Blurt before reporting the task as done:
+  During normal implementation, use a debug build for fast compile validation:
+
+  ```powershell
+  $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+  Set-Location src-tauri
+  cargo build
+  ```
+
+  Do not run a release build during intermediate iterations. After implementation and tests are complete, tasks that changed runtime Rust code, Cargo configuration, or `ui/` assets require one final release deployment before reporting the task as done. Documentation-only and repository-instruction-only tasks do not require a build or relaunch.
 
   ```powershell
   $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
@@ -30,6 +38,7 @@
 
   - `frontendDist` is `../ui`, so HTML/CSS/JS changes only take effect in the rebuilt exe.
   - Run cargo from inside `src-tauri`: the required `+crt-static` rustflags live in `src-tauri/.cargo/config.toml`, and cargo discovers that config by working directory.
+  - Do not run `cargo clean` during routine development or deployment. It removes many gigabytes of reusable build artifacts and makes the next build start from scratch. Use it only when the user explicitly requests disk cleanup or when the cache is demonstrably corrupted.
   - Release builds use LTO and consistently take longer than a 120-second command window while linking. Run `cargo build --release` with a timeout of at least 360 seconds. A 120-second timeout by itself is not a build failure; rerun the same build with the longer timeout and reuse the incremental artifacts.
   - Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
   - Routine deployment is pre-authorized for this repository: stop the running Blurt process, replace `dist\Blurt.exe`, and relaunch it without asking the user for confirmation each time.
