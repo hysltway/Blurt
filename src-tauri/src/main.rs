@@ -3,9 +3,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use tauri::Manager;
+
 mod app;
 mod asr;
 mod audio;
+mod autostart;
 mod commands;
 mod config;
 mod doubao;
@@ -79,6 +82,11 @@ fn main() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            let autostart_enabled = handle.state::<app::AppState>().config.read().autostart;
+            if let Err(error) = autostart::set_enabled(&handle, autostart_enabled) {
+                tracing::error!("同步开机自启动状态失败：{error}");
+            }
 
             tray::create(&handle)?;
             hud::create(&handle)?;

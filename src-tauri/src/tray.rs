@@ -1,11 +1,10 @@
 //! 托盘图标与菜单（简体中文）。
-//! 交互约定：左键单击 → 打开设置；右键 → 原生菜单（状态/设置/自启/引擎/日志/退出）。
+//! 交互约定：左键单击 → 打开设置；右键 → 原生菜单（状态/设置/自启/重启/日志/退出）。
 
 use parking_lot::Mutex;
 use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
-use tauri_plugin_autostart::ManagerExt;
 
 // 菜单项句柄（用于动态更新状态文本 / 同步自启勾选）
 static STATUS_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
@@ -21,7 +20,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let autostart_i = CheckMenuItemBuilder::with_id("autostart", "开机自启动")
         .checked(cfg.autostart)
         .build(app)?;
-    let reload_i = MenuItemBuilder::with_id("reload", "重新加载引擎").build(app)?;
+    let restart_i = MenuItemBuilder::with_id("restart", "重新启动 Blurt").build(app)?;
     let logs_i = MenuItemBuilder::with_id("logs", "打开日志目录").build(app)?;
     let quit_i = MenuItemBuilder::with_id("quit", "退出 Blurt").build(app)?;
 
@@ -31,7 +30,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .item(&settings_i)
         .item(&autostart_i)
         .separator()
-        .item(&reload_i)
+        .item(&restart_i)
         .item(&logs_i)
         .separator()
         .item(&quit_i)
@@ -60,7 +59,10 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
                         .unwrap_or(false);
                     apply_autostart(app, checked);
                 }
-                "reload" => crate::app::spawn_engine_load(app, false),
+                "restart" => {
+                    tracing::info!("托盘菜单：重新启动 Blurt");
+                    app.request_restart();
+                }
                 "logs" => {
                     let _ = std::process::Command::new("explorer.exe")
                         .arg(crate::config::logs_dir())
@@ -99,15 +101,22 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 
 fn apply_autostart(app: &AppHandle, enable: bool) {
     let state = app.state::<crate::app::AppState>();
-    {
-        let mut c = state.config.write();
-        c.autostart = enable;
-        let _ = crate::config::save(&c);
+    let previous = state.config.read().autostart;
+
+    if let Err(error) = crate::autostart::set_enabled(app, enable) {
+        tracing::error!("设置开机自启失败：{error}");
+        sync_autostart(previous);
+        return;
     }
-    let al = app.autolaunch();
-    let r = if enable { al.enable() } else { al.disable() };
-    if let Err(e) = r {
-        tracing::error!("设置开机自启失败：{e}");
+
+    let mut config = state.config.write();
+    config.autostart = enable;
+    if let Err(error) = crate::config::save(&config) {
+        config.autostart = previous;
+        drop(config);
+        let _ = crate::autostart::set_enabled(app, previous);
+        sync_autostart(previous);
+        tracing::error!("保存开机自启配置失败：{error}");
     }
 }
 

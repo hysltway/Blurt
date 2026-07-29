@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_autostart::ManagerExt;
 
 use crate::app::AppState;
 use crate::config::{self, Config};
@@ -23,15 +22,7 @@ pub fn set_config(
 
     // 开机自启
     if config.autostart != old.autostart {
-        let al = app.autolaunch();
-        let r = if config.autostart {
-            al.enable()
-        } else {
-            al.disable()
-        };
-        if let Err(e) = r {
-            return Err(format!("设置开机自启失败:{e}"));
-        }
+        crate::autostart::set_enabled(&app, config.autostart)?;
         crate::tray::sync_autostart(config.autostart);
     }
 

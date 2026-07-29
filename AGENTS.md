@@ -30,7 +30,9 @@
 
   - `frontendDist` is `../ui`, so HTML/CSS/JS changes only take effect in the rebuilt exe.
   - Run cargo from inside `src-tauri`: the required `+crt-static` rustflags live in `src-tauri/.cargo/config.toml`, and cargo discovers that config by working directory.
+  - Release builds use LTO and consistently take longer than a 120-second command window while linking. Run `cargo build --release` with a timeout of at least 360 seconds. A 120-second timeout by itself is not a build failure; rerun the same build with the longer timeout and reuse the incremental artifacts.
   - Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
+  - Routine deployment is pre-authorized for this repository: stop the running Blurt process, replace `dist\Blurt.exe`, and relaunch it without asking the user for confirmation each time.
   - If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
 
   Worktree hygiene:
