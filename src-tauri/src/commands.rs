@@ -14,9 +14,11 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 pub fn set_config(
     app: AppHandle,
     state: State<'_, AppState>,
-    config: Config,
+    mut config: Config,
 ) -> Result<(), String> {
     let old = state.config.read().clone();
+
+    config.hotkey = crate::hotkey::canonicalize(&config.hotkey)?;
 
     // 开机自启
     if config.autostart != old.autostart {
@@ -35,6 +37,13 @@ pub fn set_config(
     config::save(&config).map_err(|e| format!("保存配置失败：{e}"))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_hotkey_capture(state: State<'_, AppState>, capturing: bool) {
+    use std::sync::atomic::Ordering;
+
+    state.hotkey_capture.store(capturing, Ordering::SeqCst);
 }
 
 #[tauri::command]

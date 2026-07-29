@@ -1,5 +1,5 @@
 //! Blurt — 基于豆包 API 的 Windows 语音输入工具
-//! 按住 Ctrl+Alt，说出想法，文字落进光标。
+//! 按住全局快捷键，说出想法，文字落进光标。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -64,6 +64,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,
+            commands::set_hotkey_capture,
             commands::doubao_api_key_status,
             commands::set_doubao_api_key,
             commands::list_input_devices,
@@ -83,8 +84,7 @@ fn main() {
             tray::create(&handle)?;
             hud::create(&handle)?;
 
-            // 安装写死的 Ctrl+Alt 键盘钩子（RegisterHotKey 不支持纯修饰键组合，
-            // 必须走低级钩子；失败不致命，托盘提示后其余功能照常）
+            // 安装可配置的低级键盘钩子（RegisterHotKey 不支持纯修饰键组合）。
             if let Err(e) = hotkey::spawn_chord_hook(&handle) {
                 tracing::error!("{e}");
                 tray::set_tooltip(&handle, &format!("Blurt · {e}"));

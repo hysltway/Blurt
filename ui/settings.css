@@ -15,6 +15,7 @@
   --ink-soft: #4c4c4c;
   --muted: #767676;
   --faint: #a9a9a9;
+  --content-width: 760px;
 }
 
 html,
@@ -25,11 +26,9 @@ body {
 }
 
 body {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: clamp(10px, 1.8vh, 18px);
   min-height: 100dvh;
-  overflow: hidden;
+  overflow-y: auto;
   padding: clamp(12px, 2vw, 26px);
   color: var(--ink);
   font-family: "Microsoft YaHei UI", "Segoe UI Variable", sans-serif;
@@ -53,6 +52,8 @@ input {
   min-width: 0;
   padding-bottom: clamp(9px, 1.6vh, 14px);
   border-bottom: 1px solid var(--line-strong);
+  width: min(100%, var(--content-width));
+  margin-inline: auto;
 }
 
 .brand {
@@ -96,10 +97,6 @@ input {
   white-space: nowrap;
 }
 
-.command-bar {
-  flex: none;
-}
-
 .keycaps {
   display: flex;
   align-items: center;
@@ -130,13 +127,13 @@ input {
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   align-content: start;
   gap: clamp(10px, 1.5vw, 16px);
   min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 2px;
-  scrollbar-gutter: stable;
+  margin-top: clamp(10px, 1.8vh, 18px);
+  width: min(100%, var(--content-width));
+  margin-inline: auto;
 }
 
 .card {
@@ -177,11 +174,28 @@ input {
   color: var(--ink);
 }
 
-.row.col,
-.row-stack {
+.row.col {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+}
+
+.row-stack {
+  display: grid;
+  grid-template-columns: minmax(128px, 0.76fr) minmax(0, 1.24fr);
+  align-items: center;
+}
+
+.row-shortcut {
+  min-height: 46px;
+}
+
+.shortcut-editor {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  min-width: 0;
 }
 
 .row-toggle {
@@ -196,10 +210,7 @@ input {
 }
 
 .row-hotwords {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.7fr) minmax(280px, 1.3fr);
-  align-items: center;
-  gap: 18px;
+  gap: 8px;
 }
 
 .engine-panel {
@@ -504,7 +515,9 @@ footer {
   display: flex;
   justify-content: flex-end;
   min-width: 0;
-  padding-top: 2px;
+  padding-top: clamp(10px, 1.8vh, 18px);
+  width: min(100%, var(--content-width));
+  margin-inline: auto;
 }
 
 #toast {
@@ -552,6 +565,7 @@ footer {
     grid-column: auto;
   }
 
+  .row-stack,
   .card-voice .row-range,
   .row-hotwords {
     display: flex;

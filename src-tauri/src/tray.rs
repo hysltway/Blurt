@@ -146,8 +146,9 @@ pub fn open_settings(app: &AppHandle) {
     }
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Blurt 设置")
-        .inner_size(760.0, 720.0)
+        .inner_size(800.0, 640.0)
         .min_inner_size(360.0, 480.0)
+        .max_inner_size(860.0, 700.0)
         .resizable(true)
         .maximizable(false)
         .center()

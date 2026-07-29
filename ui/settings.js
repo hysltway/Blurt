@@ -1,4 +1,4 @@
-/* Blurt 设置页逻辑（快捷键在代码里写死为 Ctrl+Alt，页面只做展示） */
+/* Blurt 设置页逻辑 */
 'use strict';
 
 const { invoke } = window.__TAURI__.core;
@@ -7,6 +7,8 @@ const { listen } = window.__TAURI__.event;
 let cfg = null;
 let saveTimer = null;
 let apiKeyState = { configured: false, error: null };
+let capturingHotkey = false;
+let pendingHotkey = null;
 
 const $ = id => document.getElementById(id);
 
@@ -41,6 +43,90 @@ function fmtAutoStop(v) {
   return v > 0 ? v + ' 秒' : '关闭';
 }
 
+function renderHotkey(hotkey) {
+  const value = $('hotkeyValue');
+  value.replaceChildren();
+  for (const [index, key] of String(hotkey || 'Ctrl+Alt').split('+').entries()) {
+    if (index) {
+      const plus = document.createElement('span');
+      plus.className = 'plus';
+      plus.textContent = '+';
+      value.appendChild(plus);
+    }
+    const keycap = document.createElement('kbd');
+    keycap.textContent = key;
+    value.appendChild(keycap);
+  }
+}
+
+function capturedKey(event) {
+  const named = {
+    ' ': 'Space',
+    Spacebar: 'Space',
+    Tab: 'Tab',
+    Enter: 'Enter',
+    Backspace: 'Backspace',
+    Insert: 'Insert',
+    Delete: 'Delete',
+    Home: 'Home',
+    End: 'End',
+    PageUp: 'PageUp',
+    PageDown: 'PageDown',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+  };
+  if (named[event.key]) return named[event.key];
+  if (/^[a-z0-9]$/i.test(event.key)) return event.key.toUpperCase();
+  if (/^F(?:[1-9]|1\d|2[0-4])$/.test(event.key)) return event.key.toUpperCase();
+  return null;
+}
+
+function capturedHotkey(event) {
+  const modifiers = [
+    event.ctrlKey && 'Ctrl',
+    event.altKey && 'Alt',
+    event.shiftKey && 'Shift',
+    event.metaKey && 'Win',
+  ].filter(Boolean);
+  const key = capturedKey(event);
+  if (!key && modifiers.length < 2) return null;
+  if (key && !modifiers.length) return null;
+  return { value: [...modifiers, key].filter(Boolean).join('+'), hasPrimary: Boolean(key) };
+}
+
+function endHotkeyCapture() {
+  if (!capturingHotkey) return;
+  capturingHotkey = false;
+  pendingHotkey = null;
+  $('btnCaptureHotkey').textContent = '修改';
+  invoke('set_hotkey_capture', { capturing: false }).catch(() => {});
+}
+
+async function beginHotkeyCapture() {
+  if (capturingHotkey) {
+    endHotkeyCapture();
+    return;
+  }
+  try {
+    await invoke('set_hotkey_capture', { capturing: true });
+    capturingHotkey = true;
+    pendingHotkey = null;
+    $('btnCaptureHotkey').textContent = '按下按键';
+    $('btnCaptureHotkey').focus();
+  } catch (e) {
+    toast(String(e));
+  }
+}
+
+function applyCapturedHotkey(hotkey) {
+  endHotkeyCapture();
+  cfg.hotkey = hotkey;
+  renderHotkey(hotkey);
+  save(true);
+}
+
 /* ---------- 豆包 API 状态 ---------- */
 const API_PILL_TEXT = { ready: '已就绪', loading: '连接中…', missing: '未配置', failed: '凭据错误' };
 
@@ -63,6 +149,7 @@ function renderApiKeyState() {
 
 /* ---------- 渲染 ---------- */
 function render() {
+  renderHotkey(cfg.hotkey);
   const radio = document.querySelector(`#injectSeg input[value="${cfg.inject_mode}"]`);
   if (radio) radio.checked = true;
   $('autostart').checked = cfg.autostart;
@@ -95,6 +182,30 @@ async function loadMics() {
 
 /* ---------- 事件绑定 ---------- */
 function bind() {
+  $('btnCaptureHotkey').addEventListener('click', beginHotkeyCapture);
+  document.addEventListener('keydown', event => {
+    if (!capturingHotkey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      endHotkeyCapture();
+      return;
+    }
+    const hotkey = capturedHotkey(event);
+    if (!hotkey) return;
+    pendingHotkey = hotkey.value;
+    if (hotkey.hasPrimary) applyCapturedHotkey(hotkey.value);
+  }, true);
+  document.addEventListener('keyup', event => {
+    if (!capturingHotkey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && pendingHotkey) {
+      applyCapturedHotkey(pendingHotkey);
+    }
+  }, true);
+  window.addEventListener('blur', endHotkeyCapture);
+
   for (const r of document.querySelectorAll('#injectSeg input')) {
     r.addEventListener('change', e => {
       if (e.target.checked) { cfg.inject_mode = e.target.value; save(); }

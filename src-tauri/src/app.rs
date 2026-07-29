@@ -45,6 +45,7 @@ pub enum Session {
 
 pub struct AppState {
     pub config: RwLock<Config>,
+    pub hotkey_capture: AtomicBool,
     pub session: Mutex<Session>,
     pub gen: AtomicU64,
     pub stats: Mutex<Stats>,
@@ -54,6 +55,7 @@ impl AppState {
     pub fn new(config: Config) -> Self {
         Self {
             config: RwLock::new(config),
+            hotkey_capture: AtomicBool::new(false),
             session: Mutex::new(Session::Idle),
             gen: AtomicU64::new(0),
             stats: Mutex::new(config::load_stats()),
@@ -179,8 +181,7 @@ pub fn hotkey_released(app: &AppHandle, expected_gen: Option<u64>) {
     }
 }
 
-/// 按住 Ctrl+Alt 期间又按了第三个键：用户实际是在按别的快捷键（如 Ctrl+Alt+A
-/// 截图）。仅当这次按住直接开启的录音尚未松开时静默取消，避免把快捷键操作
+/// 已激活的快捷键又按下其他键时，用户实际是在执行更长的组合键。仅当这次按住直接开启的录音尚未松开时静默取消，避免把快捷键操作
 /// 误录成语音；轻点进入的切换模式与识别阶段不受影响。
 pub fn chord_broken(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -324,8 +325,8 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 toggle_mode: false,
                 awaiting_release: true,
             };
-            // 兜底监视 Ctrl+Alt 松开 + 会话期 Esc 取消 + HUD 悬停出 ✕ 按钮
-            hotkey::spawn_release_watcher(app, gen);
+            // 兜底监视快捷键松开 + 会话期 Esc 取消 + HUD 悬停出 ✕ 按钮
+            hotkey::spawn_release_watcher(app, gen, cfg.hotkey);
             hotkey::spawn_esc_watcher(app, gen);
             hud::spawn_hover_watcher(app, gen);
         }

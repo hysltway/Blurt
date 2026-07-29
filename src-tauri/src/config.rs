@@ -4,9 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+fn default_hotkey() -> String {
+    "Ctrl+Alt".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// 全局语音快捷键，例如 Ctrl+Alt 或 Ctrl+Shift+K
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
     /// 注入方式：auto | type | paste
     pub inject_mode: String,
     /// auto 模式下，长度 ≤ 该值用模拟键入，否则用剪贴板粘贴
@@ -26,6 +33,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            hotkey: default_hotkey(),
             inject_mode: "auto".into(),
             type_threshold: 20,
             mic_device: None,
@@ -160,11 +168,11 @@ fn state_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    // 早期版本的 config.json 里可能残留 "hotkey" 字段；快捷键现已在代码里
-    // 写死为 Ctrl+Alt，serde 反序列化会直接忽略未知字段。
     match fs::read_to_string(config_path()) {
         Ok(s) => {
-            let config = serde_json::from_str(&s).unwrap_or_default();
+            let mut config: Config = serde_json::from_str(&s).unwrap_or_default();
+            config.hotkey =
+                crate::hotkey::canonicalize(&config.hotkey).unwrap_or_else(|_| default_hotkey());
             // Rewrite once to remove fields from versions that supported local ASR.
             let _ = save(&config);
             config

@@ -17,11 +17,6 @@
     </div>
   </div>
 
-  <div class="command-bar">
-    <div class="keycaps" aria-label="全局快捷键 Ctrl + Alt">
-      <kbd>Ctrl</kbd><span class="plus">+</span><kbd>Alt</kbd>
-    </div>
-  </div>
 </header>
 
 <main class="settings-grid">
@@ -30,6 +25,13 @@
     <h2>
       <span>输入</span>
     </h2>
+    <div class="row row-shortcut">
+      <label for="btnCaptureHotkey">全局快捷键</label>
+      <div class="shortcut-editor">
+        <output class="keycaps" id="hotkeyValue" aria-live="polite"></output>
+        <button class="btn" id="btnCaptureHotkey" type="button">修改</button>
+      </div>
+    </div>
     <div class="row row-stack">
       <div class="field-label">识别结果写入光标处的方式</div>
       <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本注入方式">
