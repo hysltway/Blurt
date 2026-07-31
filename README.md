@@ -48,14 +48,14 @@ cargo test
 cargo build
 ```
 
-日常开发使用 `cargo build`，保留增量缓存可显著缩短后续编译。实现和测试全部完成后，再执行最终发布构建：
+日常开发使用 `cargo build`。实现和测试全部完成后，日常部署使用关闭 LTO、保留增量缓存的快速发布配置：
 
 ```powershell
 cd src-tauri
-cargo build --release
+cargo build --profile release-fast
 ```
 
-发布产物为 `src-tauri\target\release\blurt.exe`。打包安装程序可运行 `cargo tauri build`。
+日常部署产物为 `src-tauri\target\release-fast\blurt.exe`。需要完整优化的正式发布构建时，使用 `cargo build --release`；打包安装程序可运行 `cargo tauri build`。
 
 不要在日常开发或部署后例行运行 `cargo clean`。它能释放数 GB 空间，但会让下一次构建从零开始；仅在明确需要回收磁盘空间或缓存损坏时使用：
 

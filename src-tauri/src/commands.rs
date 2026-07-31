@@ -1,9 +1,9 @@
 //! 设置页 / HUD 调用的 Tauri 命令。
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::app::AppState;
-use crate::config::{self, Config};
+use crate::config::{self, Config, Stats};
 
 #[tauri::command]
 pub fn get_config(state: State<'_, AppState>) -> Config {
@@ -74,6 +74,31 @@ pub fn list_input_devices() -> Vec<String> {
 #[tauri::command]
 pub fn engine_status(app: AppHandle) -> serde_json::Value {
     crate::app::engine_status_dto(&app)
+}
+
+#[tauri::command]
+pub fn get_usage_stats(state: State<'_, AppState>) -> Stats {
+    state.stats.lock().clone()
+}
+
+#[tauri::command]
+pub fn set_settings_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or_else(|| "设置窗口不存在".to_string())?;
+    let width = width.clamp(360.0, 1400.0);
+    let height = height.clamp(600.0, 1000.0);
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let current = window
+        .inner_size()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale);
+    if (current.width - width).abs() < 1.0 && (current.height - height).abs() < 1.0 {
+        return Ok(());
+    }
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

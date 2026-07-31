@@ -12,7 +12,7 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::{RecorderHandle, StopMode};
 use crate::config::{Config, Stats};
@@ -79,7 +79,6 @@ pub fn engine_status_dto(_app: &AppHandle) -> serde_json::Value {
 }
 
 pub(crate) fn emit_engine_status(app: &AppHandle) {
-    use tauri::Emitter;
     let _ = app.emit("engine:status", engine_status_dto(app));
 }
 
@@ -428,7 +427,13 @@ pub fn on_audio_ready(
 
         match result {
             Ok((text, elapsed)) => {
-                let stats_now = *state.stats.lock();
+                let stats_now = {
+                    let mut stats = state.stats.lock();
+                    if !text.is_empty() {
+                        stats.record_usage(speech_s, &text);
+                    }
+                    stats.clone()
+                };
                 tracing::info!(
                     "豆包识别完成 {:.2}s（音频 {:.2}s）：{}",
                     elapsed,
@@ -459,6 +464,7 @@ pub fn on_audio_ready(
                 }
 
                 config::save_stats(&stats_now);
+                let _ = app.emit("usage:updated", &stats_now);
                 emit_engine_status(&app);
             }
             Err(e) => {

@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="color-scheme" content="light" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:," />
 <title>Blurt 设置</title>
 <link rel="stylesheet" href="settings.css" />
@@ -10,102 +11,162 @@
 <body>
 <header class="app-header">
   <div class="brand">
-    <div class="logo" aria-hidden="true">B</div>
     <h1>Blurt</h1>
-    <div class="engine-pill" title="识别引擎状态" role="status" aria-live="polite">
+    <div class="engine-pill" title="识别状态" role="status" aria-live="polite">
       <span class="dot missing" id="pillDot"></span><span id="pillText">检查中…</span>
     </div>
   </div>
-
+  <button class="btn header-action" id="btnOpenLogs" type="button">日志目录</button>
 </header>
 
-<main class="settings-grid">
-  <!-- 输入 -->
-  <section class="card card-input">
-    <h2>
-      <span>输入</span>
-    </h2>
-    <div class="row row-shortcut">
-      <label for="btnCaptureHotkey">全局快捷键</label>
-      <div class="shortcut-editor">
-        <output class="keycaps" id="hotkeyValue" aria-live="polite"></output>
-        <button class="btn" id="btnCaptureHotkey" type="button">修改</button>
+<main class="page-shell">
+  <section class="usage-overview" aria-labelledby="usageHeading">
+    <div class="section-heading">
+      <div class="section-title">
+        <h2 id="usageHeading">使用统计</h2>
+        <span>最近 30 天</span>
       </div>
     </div>
-    <div class="row row-stack">
-      <div class="field-label">识别结果写入光标处的方式</div>
-      <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本注入方式">
-        <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
-        <label><input type="radio" name="injectMode" value="type" /><span>模拟键入</span></label>
-        <label><input type="radio" name="injectMode" value="paste" /><span>粘贴</span></label>
-      </div>
+
+    <div class="metric-grid">
+      <article class="metric-card metric-duration">
+        <span class="metric-icon" aria-hidden="true">🎙️</span>
+        <div class="metric-copy">
+          <span class="metric-label">累计记录</span>
+          <strong id="metricDuration">0 分钟</strong>
+        </div>
+      </article>
+      <article class="metric-card metric-characters">
+        <span class="metric-icon" aria-hidden="true">✍️</span>
+        <div class="metric-copy">
+          <span class="metric-label">累计文字</span>
+          <strong id="metricCharacters">0 字</strong>
+        </div>
+      </article>
+      <article class="metric-card metric-saved">
+        <span class="metric-icon" aria-hidden="true">⚡</span>
+        <div class="metric-copy">
+          <span class="metric-label">节省输入</span>
+          <strong id="metricSaved">约 0 分钟</strong>
+        </div>
+      </article>
+      <article class="metric-card metric-streak">
+        <span class="metric-icon" aria-hidden="true">🔥</span>
+        <div class="metric-copy">
+          <span class="metric-label">连续使用</span>
+          <strong id="metricStreak">0 天</strong>
+        </div>
+      </article>
     </div>
-    <div class="row row-toggle">
-      <label for="autostart">登录 Windows 后静默驻留托盘</label>
-      <div class="switch">
-        <input type="checkbox" id="autostart" aria-label="开机自启动" />
-        <label class="slider" for="autostart"></label>
-      </div>
+
+    <div class="chart-grid">
+      <figure class="chart-panel">
+        <figcaption>
+          <span>最近 30 天识别时长趋势</span>
+          <span class="chart-total" id="trendTotal">共 0 分钟</span>
+        </figcaption>
+        <div class="chart-stage" id="trendStage">
+          <svg id="durationChart" viewBox="0 0 620 190" role="img" aria-label="最近 30 天识别时长趋势"></svg>
+          <div class="chart-tooltip" id="chartTooltip" hidden></div>
+          <p class="chart-empty" id="trendEmpty">完成一次识别后，这里会出现趋势</p>
+        </div>
+      </figure>
+
+      <figure class="chart-panel heatmap-panel">
+        <figcaption>
+          <span>使用热力图</span>
+          <span class="chart-total" id="heatmapTotal">0 个活跃日</span>
+        </figcaption>
+        <div class="heatmap-layout">
+          <div class="weekday-labels" aria-hidden="true">
+            <span>一</span><span>三</span><span>五</span>
+          </div>
+          <div class="heatmap" id="usageHeatmap" role="img" aria-label="最近 30 天使用热力图"></div>
+        </div>
+        <div class="heatmap-footer">
+          <span id="heatmapRange">最近 30 天</span>
+          <div class="heatmap-legend" aria-label="使用强度：少到多">
+            <span>少</span><i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i><span>多</span>
+          </div>
+        </div>
+      </figure>
     </div>
   </section>
 
-  <!-- 语音 -->
-  <section class="card card-voice">
-    <h2>
-      <span>语音</span>
-    </h2>
-    <div class="row row-stack">
-      <label for="micDevice">麦克风</label>
-      <select id="micDevice"><option value="">系统默认</option></select>
-    </div>
-    <div class="row row-stack row-range">
-      <label for="autoStop">说完后自动识别</label>
-      <div class="range-wrap">
-        <input type="range" id="autoStop" min="0" max="6" step="0.5" />
-        <span class="val" id="autoStopVal">2 秒</span>
-      </div>
-    </div>
-    <div class="row row-stack row-range">
-      <label for="maxRecord">最长录音时长</label>
-      <div class="range-wrap">
-        <input type="range" id="maxRecord" min="15" max="180" step="15" />
-        <span class="val" id="maxRecordVal">120 秒</span>
-      </div>
-    </div>
-  </section>
+  <section class="settings-panel" aria-label="设置">
+    <div class="primary-settings">
+      <section class="settings-section" aria-labelledby="inputHeading">
+        <h2 id="inputHeading">输入</h2>
+        <div class="setting-row">
+          <label for="btnCaptureHotkey">快捷键</label>
+          <div class="shortcut-editor">
+            <output class="keycaps" id="hotkeyValue" aria-live="polite"></output>
+            <button class="btn" id="btnCaptureHotkey" type="button">修改</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="field-label">写入方式</div>
+          <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本写入方式">
+            <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
+            <label><input type="radio" name="injectMode" value="type" /><span>键入</span></label>
+            <label><input type="radio" name="injectMode" value="paste" /><span>粘贴</span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="autostart">开机自启</label>
+          <div class="setting-control">
+            <div class="switch">
+              <input type="checkbox" id="autostart" aria-label="开机自启" />
+              <label class="slider" for="autostart"></label>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  <!-- 识别引擎 -->
-  <section class="card card-engine">
-    <h2>
-      <span>识别引擎</span>
-    </h2>
-    <div class="engine-panel api-panel">
-      <div class="model-banner" id="apiBanner" role="status" aria-live="polite">
-        <span class="dot missing" id="apiDot"></span>
-        <div class="model-info">
-          <div id="apiStatusText">正在检查 API Key…</div>
+      <section class="settings-section" aria-labelledby="recognitionHeading">
+        <h2 id="recognitionHeading">识别</h2>
+        <div class="setting-row">
+          <label for="micDevice">麦克风</label>
+          <select id="micDevice"><option value="">系统默认</option></select>
+        </div>
+        <div class="setting-row">
+          <label for="autoStop">静音结束录音</label>
+          <div class="range-wrap">
+            <input type="range" id="autoStop" min="0" max="6" step="0.5" />
+            <span class="val" id="autoStopVal">2 秒</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="maxRecord">最长录音</label>
+          <div class="range-wrap">
+            <input type="range" id="maxRecord" min="15" max="180" step="15" />
+            <span class="val" id="maxRecordVal">120 秒</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="secondary-settings" aria-labelledby="serviceHeading">
+      <h2 id="serviceHeading">服务</h2>
+      <div class="setting-row">
+        <label for="hotwords">热词</label>
+        <input id="hotwords" type="text" placeholder="Claude, Tauri, Rust, cloud=>claude" spellcheck="false" />
+      </div>
+      <div class="setting-row">
+        <div class="field-label">豆包服务</div>
+        <div class="setting-control">
+          <button class="btn" id="btnEditApiKey" type="button" aria-expanded="false" aria-controls="credentialEditor">更换密钥</button>
         </div>
       </div>
-      <div class="row row-stack api-credentials">
-        <label for="doubaoApiKey">豆包 API Key</label>
-        <div class="credential-line">
-          <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
-          <button class="btn primary" id="btnSaveApiKey" type="button">保存密钥</button>
-          <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
-        </div>
+      <div class="credential-editor" id="credentialEditor" hidden>
+        <label for="doubaoApiKey">API Key</label>
+        <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
+        <button class="btn primary" id="btnSaveApiKey" type="button">保存</button>
+        <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
       </div>
-    </div>
-
-    <div class="row col row-hotwords">
-      <label for="hotwords">热词</label>
-      <textarea id="hotwords" placeholder="Claude, Tauri, Rust, commit, cloud=>claude" spellcheck="false"></textarea>
     </div>
   </section>
 </main>
-
-<footer>
-  <button class="btn ghost" id="btnOpenLogs" type="button">打开日志目录</button>
-</footer>
 
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="settings.js"></script>

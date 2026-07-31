@@ -69,6 +69,8 @@ fn main() {
             commands::set_doubao_api_key,
             commands::list_input_devices,
             commands::engine_status,
+            commands::get_usage_stats,
+            commands::set_settings_size,
             commands::open_log_dir,
             commands::cancel_session,
             commands::get_noise_floor,
