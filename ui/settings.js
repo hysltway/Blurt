@@ -272,7 +272,8 @@ function currentStreak(stats) {
   return { days, includesToday };
 }
 
-function renderMetrics(stats) {
+function renderLifetimeMetrics(stats) {
+  // 顶部四张卡片展示跨日期累计数据；近期范围只用于趋势图和热力图。
   const totalSeconds = Number(stats.total_audio_secs) || 0;
   const totalChars = Number(stats.total_chars) || 0;
   const typingSeconds = totalChars / 2.45;
@@ -458,7 +459,7 @@ function renderHeatmap(stats) {
 
 function renderUsageStats(stats) {
   usageStats = stats;
-  renderMetrics(stats);
+  renderLifetimeMetrics(stats);
   renderTrend(stats);
   renderHeatmap(stats);
 }
