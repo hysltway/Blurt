@@ -5,6 +5,16 @@
 <link rel="icon" href="data:," />
 <title>Blurt HUD</title>
 <style>
+  :root {
+    --hud-surface: #33281E;
+    --hud-text: #FFF7EB;
+    --hud-line: #D9C5A8;
+    --hud-danger: #A83D2D;
+    --hud-danger-subtle: #F8E4DA;
+    --hud-focus: #D97706;
+    --hud-shadow: rgba(120, 80, 40, 0.08);
+  }
+
   html, body {
     margin: 0; padding: 0;
     background: transparent;
@@ -21,9 +31,10 @@
     left: 328px; top: 8px;
     width: 24px; height: 24px;
     border-radius: 50%;
-    border: 1px solid #d9d8d3;
-    background: #2f3437;
-    color: #f7f6f3;
+    border: 1px solid var(--hud-line);
+    background: var(--hud-surface);
+    color: var(--hud-text);
+    box-shadow: 0 1px 2px var(--hud-shadow), 0 0 0 1px var(--hud-shadow);
     font: 600 14px/21px "Bahnschrift", "Microsoft YaHei UI", sans-serif;
     text-align: center;
     padding: 0;
@@ -39,12 +50,12 @@
     pointer-events: auto;
   }
   #closeBtn:hover {
-    background: #9f2f2d;
-    color: #fdebec;
-    border-color: #9f2f2d;
+    background: var(--hud-danger);
+    color: var(--hud-danger-subtle);
+    border-color: var(--hud-danger);
   }
 
-  #closeBtn:focus-visible { outline: 2px solid #1f6c9f; outline-offset: 2px; }
+  #closeBtn:focus-visible { outline: 2px solid var(--hud-focus); outline-offset: 2px; }
 
   @media (prefers-reduced-motion: reduce) {
     #closeBtn { transition-duration: 1ms; }

@@ -24,19 +24,19 @@ function New-BlurtBitmap([int]$size) {
     $g.Clear([System.Drawing.Color]::Transparent)
     $s = $size / 1024.0
 
-    # 圆角方形底，靛蓝→紫 渐变
+    # 圆角方形底，品牌琥珀→明亮琥珀渐变
     $m = 32 * $s
     $side = (1024 - 64) * $s
     $bgPath = New-Object System.Drawing.Drawing2D.GraphicsPath
     Add-RoundedRect $bgPath $m $m $side $side (232 * $s)
     $rect = New-Object System.Drawing.RectangleF($m, $m, $side, $side)
-    $c1 = [System.Drawing.Color]::FromArgb(255, 0x63, 0x66, 0xF1)
-    $c2 = [System.Drawing.Color]::FromArgb(255, 0xA8, 0x55, 0xF7)
+    $c1 = [System.Drawing.Color]::FromArgb(255, 0xD9, 0x77, 0x06)
+    $c2 = [System.Drawing.Color]::FromArgb(255, 0xF5, 0xB7, 0x33)
     $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $c1, $c2, [System.Drawing.Drawing2D.LinearGradientMode]::ForwardDiagonal)
     $g.FillPath($brush, $bgPath)
 
-    # 白色声波条（小尺寸 3 条，大尺寸 5 条）
-    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 255, 255, 255))
+    # 暖白声波条（小尺寸 3 条，大尺寸 5 条）
+    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 255, 255, 244))
     if ($size -le 48) { $heights = @(400, 620, 400) } else { $heights = @(300, 480, 660, 480, 300) }
     $n = $heights.Count
     $bw = 96.0; $gap = 64.0
