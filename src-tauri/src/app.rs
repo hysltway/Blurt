@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::{RecorderHandle, StopMode};
 use crate::config::{Config, Stats};
+use crate::media_volume::PlaybackDucker;
 use crate::{audio, config, doubao, hotkey, hud, inject, tray};
 
 pub const TARGET_SR_F: f32 = audio::TARGET_SR as f32;
@@ -49,6 +50,7 @@ pub struct AppState {
     pub session: Mutex<Session>,
     pub gen: AtomicU64,
     pub stats: Mutex<Stats>,
+    pub playback_ducker: PlaybackDucker,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             session: Mutex::new(Session::Idle),
             gen: AtomicU64::new(0),
             stats: Mutex::new(config::load_stats()),
+            playback_ducker: PlaybackDucker::new(),
         }
     }
 }
@@ -217,6 +220,7 @@ pub fn esc_pressed(app: &AppHandle) {
 
 fn finish_ui_cancel(app: &AppHandle) {
     let state = app.state::<AppState>();
+    state.playback_ducker.restore();
     let gen = state.gen.load(Ordering::SeqCst);
     hud::emit_state(app, "cancel", None);
     hud::hide_later(app, 220, gen);
@@ -324,6 +328,7 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 toggle_mode: false,
                 awaiting_release: true,
             };
+            state.playback_ducker.duck();
             // 兜底监视快捷键松开 + 会话期 Esc 取消 + HUD 悬停出 ✕ 按钮
             hotkey::spawn_release_watcher(app, gen, cfg.hotkey);
             hotkey::spawn_esc_watcher(app, gen);
@@ -362,6 +367,7 @@ fn stop_and_recognize(app: &AppHandle, session: &mut Session) {
     if let Session::Recording { gen, rec, .. } = old {
         *session = Session::Processing { gen };
         rec.stop(StopMode::Finish);
+        app.state::<AppState>().playback_ducker.restore();
         tray::set_tooltip(app, "Blurt · 正在识别…");
         // HUD 保持 listen，等 on_audio_ready 携带音频时长后切 process（含预计耗时）
     } else {
@@ -388,6 +394,7 @@ pub fn on_audio_ready(
             _ => return, // 已取消/换代
         }
     }
+    state.playback_ducker.restore();
 
     let samples = match res {
         Ok(s) => s,
@@ -493,6 +500,7 @@ pub fn on_audio_ready(
 /// 会话收尾：回 Idle、延时隐藏 HUD、恢复托盘提示（Esc 看门线程见 Idle 自行退出）
 fn finish_session(app: &AppHandle, gen: u64, hide_delay_ms: u64, tooltip: &str) {
     let state = app.state::<AppState>();
+    state.playback_ducker.restore();
     {
         let mut session = state.session.lock();
         if let Session::Processing { gen: g } = &*session {

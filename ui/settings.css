@@ -142,10 +142,10 @@ textarea {
 }
 
 .metric-card {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
+  gap: 10px;
   min-width: 0;
   min-height: 88px;
   padding: 12px 14px;
@@ -157,19 +157,42 @@ textarea {
 
 .metric-icon {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   place-items: center;
   border-radius: 6px;
   background: var(--brand-subtle);
-  font-family: "Segoe UI Emoji", sans-serif;
-  font-size: 19px;
-  line-height: 1;
+  color: var(--info);
+}
+
+.metric-icon svg {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  vector-effect: non-scaling-stroke;
+}
+
+.metric-characters .metric-icon {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.metric-saved .metric-icon {
+  background: #F7EEDC;
+  color: #8A612E;
+}
+
+.metric-streak .metric-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .metric-copy {
   display: grid;
   min-width: 0;
+  justify-items: center;
+  text-align: center;
 }
 
 .metric-label {

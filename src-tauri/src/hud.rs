@@ -2,7 +2,9 @@
 //! 每次录音开始前吸附到「当前活动窗口所在显示器」的底部居中。
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 pub const HUD_W: f64 = 360.0;
 pub const HUD_H: f64 = 140.0;
@@ -83,8 +85,35 @@ pub fn show(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("hud") {
         let _ = win.show();
         let _ = win.set_always_on_top(true);
+        pin_native_topmost(&win);
     }
 }
+
+#[cfg(windows)]
+fn pin_native_topmost(win: &WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    if let Ok(handle) = win.hwnd() {
+        let hwnd = HWND(handle.0 as isize as *mut core::ffi::c_void);
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        };
+    }
+}
+
+#[cfg(not(windows))]
+fn pin_native_topmost(_win: &WebviewWindow) {}
 
 pub fn hide(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("hud") {
@@ -93,6 +122,9 @@ pub fn hide(app: &AppHandle) {
 }
 
 pub fn emit_state(app: &AppHandle, state: &str, eta_ms: Option<u64>) {
+    if state != "hidden" {
+        show(app);
+    }
     let _ = app.emit_to(
         "hud",
         "hud:state",
@@ -114,6 +146,7 @@ pub fn spawn_hover_watcher(app: &AppHandle, gen: u64) {
         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
         let mut inside_prev = false;
+        let mut topmost_tick = 0u8;
         loop {
             {
                 let state = app.state::<crate::app::AppState>();
@@ -126,6 +159,14 @@ pub fn spawn_hover_watcher(app: &AppHandle, gen: u64) {
             let Some(win) = app.get_webview_window("hud") else {
                 break;
             };
+            if topmost_tick == 0 {
+                if !win.is_visible().unwrap_or(false) {
+                    let _ = win.show();
+                }
+                let _ = win.set_always_on_top(true);
+                pin_native_topmost(&win);
+            }
+            topmost_tick = (topmost_tick + 1) % 6;
             let mut pt = POINT::default();
             let _ = unsafe { GetCursorPos(&mut pt) };
             let inside = win
@@ -159,7 +200,9 @@ pub fn hide_later(app: &AppHandle, delay_ms: u64, gen: u64) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         let state = app.state::<crate::app::AppState>();
-        if state.gen.load(std::sync::atomic::Ordering::SeqCst) == gen {
+        if state.gen.load(std::sync::atomic::Ordering::SeqCst) == gen
+            && matches!(&*state.session.lock(), crate::app::Session::Idle)
+        {
             emit_state(&app, "hidden", None);
             hide(&app);
         }

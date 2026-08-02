@@ -15,6 +15,7 @@ mod endpoint;
 mod hotkey;
 mod hud;
 mod inject;
+mod media_volume;
 mod tray;
 
 fn init_logging() {
