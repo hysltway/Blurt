@@ -24,19 +24,19 @@ function New-BlurtBitmap([int]$size) {
     $g.Clear([System.Drawing.Color]::Transparent)
     $s = $size / 1024.0
 
-    # 圆角方形底，品牌琥珀→明亮琥珀渐变
+    # 圆角方形底，浅青→浅青柠渐变
     $m = 32 * $s
     $side = (1024 - 64) * $s
     $bgPath = New-Object System.Drawing.Drawing2D.GraphicsPath
     Add-RoundedRect $bgPath $m $m $side $side (232 * $s)
     $rect = New-Object System.Drawing.RectangleF($m, $m, $side, $side)
-    $c1 = [System.Drawing.Color]::FromArgb(255, 0xD9, 0x77, 0x06)
-    $c2 = [System.Drawing.Color]::FromArgb(255, 0xF5, 0xB7, 0x33)
+    $c1 = [System.Drawing.Color]::FromArgb(255, 0xE9, 0xF7, 0xF9)
+    $c2 = [System.Drawing.Color]::FromArgb(255, 0xEE, 0xF8, 0xDB)
     $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $c1, $c2, [System.Drawing.Drawing2D.LinearGradientMode]::ForwardDiagonal)
     $g.FillPath($brush, $bgPath)
 
-    # 暖白声波条（小尺寸 3 条，大尺寸 5 条）
-    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 255, 255, 244))
+    # 深青声波条（小尺寸 3 条，大尺寸 5 条）
+    $waveBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 0x24, 0x56, 0x5D))
     if ($size -le 48) { $heights = @(400, 620, 400) } else { $heights = @(300, 480, 660, 480, 300) }
     $n = $heights.Count
     $bw = 96.0; $gap = 64.0
@@ -48,10 +48,10 @@ function New-BlurtBitmap([int]$size) {
         $y = (512 - $h / 2.0) * $s
         $p = New-Object System.Drawing.Drawing2D.GraphicsPath
         Add-RoundedRect $p $x $y ($bw * $s) ($h * $s) ($bw * $s / 2.0)
-        $g.FillPath($white, $p)
+        $g.FillPath($waveBrush, $p)
         $p.Dispose()
     }
-    $white.Dispose(); $brush.Dispose(); $bgPath.Dispose(); $g.Dispose()
+    $waveBrush.Dispose(); $brush.Dispose(); $bgPath.Dispose(); $g.Dispose()
     return $bmp
 }
 

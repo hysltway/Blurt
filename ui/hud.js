@@ -4,11 +4,11 @@
  * 整体形态 = 中央穹顶（两头窄、中间高），峰高由降噪后的实时响度决定；
  * 内部起伏 = 共同的行进大波 + 绸缕分层错相（层次感），响度越大布面张得越开：
  *   listen   聆听中（能量撑开丝波振幅 —— “它听到我了”）
- *   process  识别中（双频驻波拍频 + 噪声交错：暖琥珀随进度渐变为暖绿）
- *   success  完成（丝波收拢成绿色亮线，脉冲）
- *   error    出错（红色高频躁动 + 抖动）
- *   nothing  没听到有效语音（灰色塌陷）
- *   loading  引擎尚未就绪（品牌琥珀色呼吸）
+ *   process  识别中（双频驻波拍频 + 噪声交错：蓝紫随进度渐变为青绿）
+ *   success  完成（丝波收拢成青绿色亮线，脉冲）
+ *   error    出错（偏蓝红色高频躁动 + 抖动）
+ *   nothing  没听到有效语音（蓝绿色灰阶塌陷）
+ *   loading  引擎尚未就绪（青绿色呼吸）
  *   cancel   已取消（绸缕散开消融）
  * 实现：AE 里是 300×800 粒子网格平铺成布面；此处以 ~60 条水平“绸缕”曲线
  * 采样同一片 2D 分形噪声（大涌浪 + 错相褶皱 + 细织纹），加色混合叠出褶皱亮部；
@@ -26,12 +26,12 @@ const SPREAD = 22;               // 布面纵向厚度（绸缕基线散布）
 
 /* 每状态一对色（深部/亮部），绸缕在两色间渐变，加色叠出高光 */
 const COL = {
-  bar:   { deep: [190, 91, 5], light: [245, 180, 80] },   // 聆听暖琥珀
-  think: { deep: [155, 88, 12], light: [237, 174, 82] },  // 识别暖琥珀
-  ok:    { deep: [59, 119, 63], light: [164, 201, 147] }, // 完成暖绿
-  err:   { deep: [174, 59, 42], light: [229, 137, 115] }, // 错误暖红
-  quiet: { deep: [133, 116, 95], light: [211, 194, 169] }, // 静默暖灰
-  amber: { deep: [217, 119, 6], light: [247, 187, 94] },  // 加载品牌琥珀
+  bar:     { deep: [56, 58, 228], light: [150, 156, 255] }, // 聆听蓝紫动效
+  think:   { deep: [98, 88, 242], light: [182, 172, 255] }, // 识别靛紫动效
+  ok:      { deep: [78, 127, 67], light: [168, 200, 126] },  // 完成青绿
+  err:     { deep: [169, 75, 89], light: [228, 157, 168] },   // 错误偏蓝红
+  quiet:   { deep: [105, 128, 124], light: [193, 215, 204] }, // 静默蓝绿灰
+  loading: { deep: [57, 113, 120], light: [201, 222, 164] }, // 加载青绿
 };
 
 const canvas = document.getElementById('c');
@@ -212,7 +212,7 @@ function frame() {
     tAmp = 1; tSpread = 1;
     tAMul = lerp(1, 0.55 + 0.16 * Math.sin(t * 2.6), quiet); // 久无声 → 呼吸提示
   } else if (state === 'process') {
-    // 松开后从暖琥珀渐变为暖绿；实时聆听状态始终使用 COL.bar 的品牌暖色。
+    // 松开后从蓝紫渐变为青绿；实时聆听状态使用独立的紫色动效强调。
     const p = currentProgress();
     tPair = {
       deep: mixCol(COL.think.deep, COL.ok.deep, p * 0.65),
@@ -228,7 +228,7 @@ function frame() {
   } else if (state === 'nothing') {
     tPair = COL.quiet; tAmp = 0.18; tSpread = 0.5; tAMul = 0.8;
   } else if (state === 'loading') {
-    tPair = COL.amber; tAmp = 1; tSpread = 0.9;
+    tPair = COL.loading; tAmp = 1; tSpread = 0.9;
     tAMul = 0.62 + 0.30 * Math.sin(t * 3.4);
   } else if (state === 'cancel') {
     tAmp = 0.4; tSpread = 1.6; tAMul = 0.9;                   // 绸缕散开
