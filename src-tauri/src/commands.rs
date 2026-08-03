@@ -57,23 +57,23 @@ pub fn doubao_api_key_status() -> serde_json::Value {
 #[tauri::command]
 pub fn set_doubao_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
     config::save_doubao_api_key(&api_key).map_err(|e| format!("保存 API Key 失败：{e:#}"))?;
-    crate::app::emit_engine_status(&app);
-    if api_key.trim().is_empty() {
-        crate::tray::set_tooltip(&app, "Blurt · 请在设置中配置豆包 API Key");
-    } else {
-        crate::tray::set_tooltip(&app, "Blurt · 就绪（豆包 API）");
-    }
+    crate::app::refresh_api_status(&app, false);
     Ok(())
 }
 
 #[tauri::command]
-pub fn list_input_devices() -> Vec<String> {
+pub fn list_input_devices() -> Result<Vec<String>, String> {
     crate::audio::list_input_devices()
 }
 
 #[tauri::command]
 pub fn engine_status(app: AppHandle) -> serde_json::Value {
     crate::app::engine_status_dto(&app)
+}
+
+#[tauri::command]
+pub fn refresh_engine_status(app: AppHandle) -> serde_json::Value {
+    crate::app::refresh_engine_status(&app)
 }
 
 #[tauri::command]

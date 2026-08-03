@@ -4,9 +4,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
-    VK_SHIFT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_NONAME,
+    VK_RWIN, VK_SHIFT,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 /// 清洗 ASR 文本：去首尾空白，内部换行改空格（绝不注入回车，避免误触发送）
 pub fn sanitize(text: &str) -> String {
@@ -138,4 +139,19 @@ pub fn inject(text: &str, mode: &str, type_threshold: usize) -> Result<(), Strin
             }
         }
     }
+}
+
+/// 验证当前前台窗口可接收模拟输入；保留虚拟键不会向目标控件写入字符。
+pub fn check(mode: &str) -> Result<(), String> {
+    if !matches!(mode, "auto" | "type" | "paste") {
+        return Err(format!("未知文本写入方式：{mode}"));
+    }
+    if unsafe { GetForegroundWindow() }.0.is_null() {
+        return Err("未找到可写入的活动窗口".into());
+    }
+    send(&[key_down(VK_NONAME), key_up(VK_NONAME)])?;
+    if mode != "type" {
+        arboard::Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?;
+    }
+    Ok(())
 }

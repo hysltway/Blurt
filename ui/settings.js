@@ -78,8 +78,8 @@ function save(immediate = false) {
       render();
     }
   };
-  if (immediate) doSave();
-  else saveTimer = setTimeout(doSave, 350);
+  if (immediate) return doSave();
+  saveTimer = setTimeout(doSave, 350);
 }
 
 function fmtAutoStop(v) {
@@ -173,15 +173,27 @@ function applyCapturedHotkey(hotkey) {
 /* ---------- 引擎与密钥 ---------- */
 const API_PILL_TEXT = {
   ready: '已就绪',
-  loading: '连接中…',
+  loading: '检测中…',
   missing: '未配置',
-  failed: '凭据错误',
+  failed: '不可用',
 };
 
 function renderEngine(st) {
   const dotCls = { ready: 'ok', loading: 'loading', missing: 'missing' }[st.state] || 'err';
   $('pillDot').className = 'dot ' + dotCls;
   $('pillText').textContent = API_PILL_TEXT[st.state] || API_PILL_TEXT.failed;
+  const detail = st.detail || API_PILL_TEXT[st.state] || API_PILL_TEXT.failed;
+  const pill = document.querySelector('.engine-pill');
+  pill.title = detail;
+  pill.setAttribute('aria-label', detail);
+}
+
+async function refreshEngineStatus() {
+  try {
+    renderEngine(await invoke('refresh_engine_status'));
+  } catch (e) {
+    renderEngine({ state: 'failed', detail: String(e) });
+  }
 }
 
 function updateApiEditor(open) {
@@ -500,7 +512,13 @@ async function loadMics() {
       sel.appendChild(option);
     }
     sel.value = cfg.mic_device || '';
-  } catch (_) {}
+    sel.disabled = false;
+  } catch (e) {
+    const sel = $('micDevice');
+    sel.innerHTML = '<option value="">麦克风不可用</option>';
+    sel.disabled = true;
+    toast('读取麦克风失败：' + e);
+  }
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -530,11 +548,12 @@ function bind() {
   window.addEventListener('blur', endHotkeyCapture);
 
   for (const radio of document.querySelectorAll('#injectSeg input')) {
-    radio.addEventListener('change', event => {
+    radio.addEventListener('change', async event => {
       if (!event.target.checked) return;
       cfg.inject_mode = event.target.value;
       syncInjectSegment(cfg.inject_mode);
-      save();
+      await save(true);
+      void refreshEngineStatus();
     });
   }
   $('autostart').addEventListener('change', event => {
@@ -545,9 +564,10 @@ function bind() {
     cfg.hotwords = event.target.value;
     save();
   });
-  $('micDevice').addEventListener('change', event => {
+  $('micDevice').addEventListener('change', async event => {
     cfg.mic_device = event.target.value || null;
-    save();
+    await save(true);
+    void refreshEngineStatus();
   });
   $('maxRecord').addEventListener('input', event => {
     cfg.max_record_secs = parseInt(event.target.value);
@@ -616,6 +636,7 @@ function bind() {
   setApiEditorOpen(apiEditorOpen);
   installSettingsResize();
   renderEngine(await invoke('engine_status'));
-  listen('engine:status', event => renderEngine(event.payload));
-  listen('usage:updated', event => renderUsageStats(event.payload));
+  await listen('engine:status', event => renderEngine(event.payload));
+  await listen('usage:updated', event => renderUsageStats(event.payload));
+  void refreshEngineStatus();
 })();

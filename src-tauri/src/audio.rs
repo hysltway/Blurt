@@ -40,12 +40,49 @@ impl RecorderHandle {
     }
 }
 
-pub fn list_input_devices() -> Vec<String> {
+pub fn list_input_devices() -> Result<Vec<String>, String> {
     let host = cpal::default_host();
-    match host.input_devices() {
-        Ok(devs) => devs.filter_map(|d| d.name().ok()).collect(),
-        Err(_) => vec![],
+    host.input_devices()
+        .map_err(|e| format!("枚举麦克风失败：{e}"))?
+        .map(|device| {
+            device
+                .name()
+                .map_err(|e| format!("读取麦克风名称失败：{e}"))
+        })
+        .collect()
+}
+
+fn resolve_input_device(device_name: Option<&str>) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    match device_name {
+        Some(name) => host
+            .input_devices()
+            .map_err(|e| format!("枚举麦克风失败：{e}"))?
+            .find_map(|device| match device.name() {
+                Ok(device_name) if device_name == name => Some(Ok(device)),
+                Ok(_) => None,
+                Err(error) => Some(Err(format!("读取麦克风名称失败：{error}"))),
+            })
+            .transpose()?
+            .ok_or_else(|| format!("找不到已选麦克风：{name}")),
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "未找到系统默认麦克风".into()),
     }
+}
+
+/// 实际初始化并启动输入流后立即释放，以验证设备、驱动与系统麦克风权限。
+pub fn check_input_device(device_name: Option<&str>) -> Result<(), String> {
+    let device = resolve_input_device(device_name)?;
+    let supported = device
+        .default_input_config()
+        .map_err(|e| format!("无法读取麦克风配置：{e}"))?;
+    let sample_format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.into();
+    let stream = device
+        .build_input_stream_raw(&config, sample_format, |_, _| {}, |_| {}, None)
+        .map_err(|e| format!("无法打开麦克风：{e}"))?;
+    stream.play().map_err(|e| format!("无法启动录音：{e}"))
 }
 
 /* ---------------- 流式重采样 ---------------- */
@@ -182,18 +219,12 @@ where
         .name("blurt-recorder".into())
         .spawn(move || {
             let started = Instant::now();
-            let host = cpal::default_host();
-            let device = match &device_name {
-                Some(name) => host
-                    .input_devices()
-                    .ok()
-                    .and_then(|mut it| it.find(|d| d.name().map(|n| &n == name).unwrap_or(false)))
-                    .or_else(|| host.default_input_device()),
-                None => host.default_input_device(),
-            };
-            let Some(device) = device else {
-                on_done(Err("未找到可用的麦克风设备".into()));
-                return;
+            let device = match resolve_input_device(device_name.as_deref()) {
+                Ok(device) => device,
+                Err(error) => {
+                    on_done(Err(error));
+                    return;
+                }
             };
             let sup = match device.default_input_config() {
                 Ok(c) => c,

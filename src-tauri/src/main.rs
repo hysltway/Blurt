@@ -36,8 +36,16 @@ fn main() {
     // 命令行模式
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--list-mics") {
-        for d in audio::list_input_devices() {
-            println!("{d}");
+        match audio::list_input_devices() {
+            Ok(devices) => {
+                for device in devices {
+                    println!("{device}");
+                }
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -70,6 +78,7 @@ fn main() {
             commands::set_doubao_api_key,
             commands::list_input_devices,
             commands::engine_status,
+            commands::refresh_engine_status,
             commands::get_usage_stats,
             commands::set_settings_size,
             commands::open_log_dir,

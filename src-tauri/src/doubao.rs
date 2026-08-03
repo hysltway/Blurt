@@ -18,6 +18,7 @@ const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_asyn
 const RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 const AUDIO_CHUNK_SAMPLES: usize = 3200; // 200ms @ 16kHz，文档推荐值
 const RESULT_TIMEOUT: Duration = Duration::from_secs(45);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum Command {
     Audio(Vec<f32>),
@@ -66,16 +67,27 @@ impl Stream {
         }
     }
 
-    pub fn finish(mut self) -> Result<(String, f64)> {
+    pub fn finish(self) -> Result<(String, f64)> {
+        self.finish_with_timeout(RESULT_TIMEOUT)
+    }
+
+    /// 发送一小段静音，验证网络连通性与 API Key；不会产生识别文本。
+    pub fn check(api_key: String) -> Result<()> {
+        let stream = Self::start(api_key, String::new());
+        stream.audio_sender().push(&[0.0; AUDIO_CHUNK_SAMPLES]);
+        stream.finish_with_timeout(PROBE_TIMEOUT).map(|_| ())
+    }
+
+    fn finish_with_timeout(mut self, timeout: Duration) -> Result<(String, f64)> {
         let started = Instant::now();
         let tx = self.tx.take().context("豆包流已结束")?;
         let finish_sent = tx.send(Command::Finish).is_ok();
         drop(tx);
         let text = self
             .result_rx
-            .recv_timeout(RESULT_TIMEOUT)
+            .recv_timeout(timeout)
             .map_err(|e| match e {
-                RecvTimeoutError::Timeout => anyhow!("等待豆包最终识别结果超时"),
+                RecvTimeoutError::Timeout => anyhow!("等待豆包服务响应超时"),
                 RecvTimeoutError::Disconnected if !finish_sent => anyhow!("豆包识别线程已退出"),
                 RecvTimeoutError::Disconnected => anyhow!("豆包识别线程异常退出"),
             })?

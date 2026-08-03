@@ -46,6 +46,8 @@ pub enum Session {
 
 pub struct AppState {
     pub config: RwLock<Config>,
+    pub engine_status: RwLock<serde_json::Value>,
+    pub engine_status_gen: AtomicU64,
     pub hotkey_capture: AtomicBool,
     pub session: Mutex<Session>,
     pub gen: AtomicU64,
@@ -57,6 +59,8 @@ impl AppState {
     pub fn new(config: Config) -> Self {
         Self {
             config: RwLock::new(config),
+            engine_status: RwLock::new(status_dto("loading", "正在检查可用性")),
+            engine_status_gen: AtomicU64::new(0),
             hotkey_capture: AtomicBool::new(false),
             session: Mutex::new(Session::Idle),
             gen: AtomicU64::new(0),
@@ -68,35 +72,126 @@ impl AppState {
 
 /* ---------------- 豆包 API 状态 ---------------- */
 
-pub fn engine_status_dto(_app: &AppHandle) -> serde_json::Value {
-    let (state, detail) = match config::load_doubao_api_key() {
-        Ok(Some(_)) => ("ready", "豆包流式语音识别 1.0".to_string()),
-        Ok(None) => ("missing", "请先保存 API Key".to_string()),
-        Err(error) => ("failed", format!("读取 API Key 失败：{error}")),
-    };
+fn status_dto(state: &str, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({
         "state": state,
-        "detail": detail,
+        "detail": detail.into(),
         "provider": "doubao",
     })
+}
+
+pub fn engine_status_dto(app: &AppHandle) -> serde_json::Value {
+    app.state::<AppState>().engine_status.read().clone()
+}
+
+fn set_engine_status(app: &AppHandle, status: serde_json::Value) {
+    *app.state::<AppState>().engine_status.write() = status.clone();
+    let _ = app.emit("engine:status", status);
 }
 
 pub(crate) fn emit_engine_status(app: &AppHandle) {
     let _ = app.emit("engine:status", engine_status_dto(app));
 }
 
-/// 刷新凭据状态；首次启动缺少 API Key 时打开设置页。
-pub fn refresh_api_status(app: &AppHandle, open_settings_if_missing: bool) {
-    let configured = config::load_doubao_api_key().ok().flatten().is_some();
-    emit_engine_status(app);
-    if configured {
-        tray::set_tooltip(app, "Blurt · 就绪（豆包 API）");
+fn check_engine_status(app: &AppHandle) -> serde_json::Value {
+    let api_key = match config::load_doubao_api_key() {
+        Ok(Some(api_key)) => api_key,
+        Ok(None) => return status_dto("missing", "请先保存 API Key"),
+        Err(error) => return status_dto("failed", format!("读取 API Key 失败：{error}")),
+    };
+    let cfg = app.state::<AppState>().config.read().clone();
+    let mut failures = Vec::new();
+    if let Err(error) = crate::doubao::Stream::check(api_key) {
+        failures.push(format!("豆包服务（网络或 API Key）：{error:#}"));
+    }
+    if let Err(error) = audio::check_input_device(cfg.mic_device.as_deref()) {
+        failures.push(format!("麦克风：{error}"));
+    }
+    if let Err(error) = inject::check(&cfg.inject_mode) {
+        failures.push(format!("文本写入：{error}"));
+    }
+    health_status(failures)
+}
+
+fn health_status(failures: Vec<String>) -> serde_json::Value {
+    if failures.is_empty() {
+        status_dto("ready", "网络、API Key、麦克风和文本写入均可用")
     } else {
-        tray::set_tooltip(app, "Blurt · 请在设置中配置豆包 API Key");
-        if open_settings_if_missing {
-            tray::open_settings(app);
+        status_dto("failed", failures.join("；"))
+    }
+}
+
+fn set_status_tooltip(app: &AppHandle, status: &serde_json::Value) {
+    let tooltip = match status.get("state").and_then(serde_json::Value::as_str) {
+        Some("ready") => "Blurt · 就绪（服务、麦克风、写入）",
+        Some("loading") => "Blurt · 正在检查可用性…",
+        Some("missing") => "Blurt · 请在设置中配置豆包 API Key",
+        _ => "Blurt · 不可用，请打开设置查看详情",
+    };
+    tray::set_tooltip(app, tooltip);
+}
+
+fn mark_engine_failed(app: &AppHandle, detail: impl Into<String>) {
+    app.state::<AppState>()
+        .engine_status_gen
+        .fetch_add(1, Ordering::SeqCst);
+    let status = status_dto("failed", detail);
+    set_status_tooltip(app, &status);
+    set_engine_status(app, status);
+}
+
+/// 刷新可用性；首次缺少 API Key 时打开设置页。
+pub fn refresh_api_status(app: &AppHandle, open_settings_if_missing: bool) {
+    let generation = app
+        .state::<AppState>()
+        .engine_status_gen
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    match config::load_doubao_api_key() {
+        Ok(Some(_)) => {
+            let loading = status_dto("loading", "正在检查网络、API Key、麦克风和文本写入");
+            set_engine_status(app, loading.clone());
+            set_status_tooltip(app, &loading);
+            let check_app = app.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("blurt-availability".into())
+                .spawn(move || {
+                    let status = check_engine_status(&check_app);
+                    if check_app
+                        .state::<AppState>()
+                        .engine_status_gen
+                        .load(Ordering::SeqCst)
+                        == generation
+                    {
+                        set_status_tooltip(&check_app, &status);
+                        set_engine_status(&check_app, status);
+                    }
+                })
+            {
+                let failed = status_dto("failed", format!("无法启动可用性检查：{error}"));
+                set_status_tooltip(app, &failed);
+                set_engine_status(app, failed);
+            }
+        }
+        Ok(None) => {
+            let missing = status_dto("missing", "请先保存 API Key");
+            set_status_tooltip(app, &missing);
+            set_engine_status(app, missing);
+            if open_settings_if_missing {
+                tray::open_settings(app);
+            }
+        }
+        Err(error) => {
+            let failed = status_dto("failed", format!("读取 API Key 失败：{error}"));
+            set_status_tooltip(app, &failed);
+            set_engine_status(app, failed);
         }
     }
+}
+
+pub fn refresh_engine_status(app: &AppHandle) -> serde_json::Value {
+    refresh_api_status(app, false);
+    engine_status_dto(app)
 }
 
 /* ---------------- 热键事件 ---------------- */
@@ -227,8 +322,30 @@ fn finish_ui_cancel(app: &AppHandle) {
     tray::set_tooltip(app, ready_tooltip(app));
 }
 
-fn ready_tooltip(_app: &AppHandle) -> &'static str {
-    "Blurt · 就绪（豆包 API）"
+fn ready_tooltip(app: &AppHandle) -> &'static str {
+    match engine_status_dto(app)
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("ready") => "Blurt · 就绪（服务、麦克风、写入）",
+        Some("loading") => "Blurt · 正在检查可用性…",
+        Some("missing") => "Blurt · 请在设置中配置豆包 API Key",
+        _ => "Blurt · 不可用，请打开设置查看详情",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_status;
+
+    #[test]
+    fn health_requires_every_component() {
+        assert_eq!(health_status(Vec::new())["state"], "ready");
+        assert_eq!(
+            health_status(vec!["麦克风不可用".into()])["state"],
+            "failed"
+        );
+    }
 }
 
 /* ---------------- 会话流转 ---------------- */
@@ -336,9 +453,9 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
         }
         Err(e) => {
             tracing::error!("录音启动失败：{e}");
+            mark_engine_failed(app, format!("麦克风：{e}"));
             hud::emit_state(app, "error", None);
             hud::hide_later(app, 1000, gen);
-            tray::set_tooltip(app, "Blurt · 麦克风不可用");
         }
     }
 }
@@ -400,6 +517,7 @@ pub fn on_audio_ready(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("录音失败：{e}");
+            mark_engine_failed(app, format!("麦克风：{e}"));
             hud::emit_state(app, "error", None);
             finish_session(app, gen, 1000, ready_tooltip(app));
             return;
@@ -460,6 +578,7 @@ pub fn on_audio_ready(
                         }
                         Err(e) => {
                             tracing::error!("注入失败：{e}（已复制到剪贴板兜底）");
+                            mark_engine_failed(&app, format!("文本写入：{e}"));
                             // 兜底：至少把文本放进剪贴板
                             if let Ok(mut cb) = arboard::Clipboard::new() {
                                 let _ = cb.set_text(text);
@@ -476,6 +595,7 @@ pub fn on_audio_ready(
             }
             Err(e) => {
                 tracing::error!("识别失败：{e:#}");
+                mark_engine_failed(&app, format!("豆包服务（网络或 API Key）：{e:#}"));
                 hud::emit_state(&app, "error", None);
                 finish_session(&app, gen, 1100, "Blurt · 识别失败");
             }
