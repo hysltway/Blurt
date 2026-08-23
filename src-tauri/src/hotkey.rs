@@ -200,7 +200,7 @@ fn vk_is_down(vk: u32) -> bool {
 }
 
 /// Physical modifier-key state reconstructed from the low-level key stream.
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ChordMods {
     lctrl: bool,
     rctrl: bool,
@@ -246,6 +246,18 @@ impl ChordMods {
 
     fn clear(&self) -> bool {
         !self.ctrl() && !self.alt() && !self.shift() && !self.win()
+    }
+
+    /// 同步硬件物理按键状态，自动修正因锁屏（Win+L/Ctrl+Alt+Del）、UAC 或会话切换丢失的 KeyUp 事件。
+    fn sync_physical(&mut self) {
+        self.lshift &= vk_is_down(0xA0) || vk_is_down(VK_SHIFT);
+        self.rshift &= vk_is_down(0xA1) || vk_is_down(VK_SHIFT);
+        self.lctrl &= vk_is_down(0xA2) || vk_is_down(VK_CONTROL);
+        self.rctrl &= vk_is_down(0xA3) || vk_is_down(VK_CONTROL);
+        self.lalt &= vk_is_down(0xA4) || vk_is_down(VK_MENU);
+        self.ralt &= vk_is_down(0xA5) || vk_is_down(VK_MENU);
+        self.lwin &= vk_is_down(VK_LWIN);
+        self.rwin &= vk_is_down(VK_RWIN);
     }
 }
 
@@ -294,7 +306,19 @@ impl ChordState {
             return None;
         }
 
-        if self.mods.set(vk, pressed) {
+        let is_mod = self.mods.set(vk, pressed);
+        if cfg!(not(test)) {
+            self.mods.sync_physical();
+            if self.phase == ChordPhase::Active {
+                if let Some(active) = self.active_shortcut {
+                    if !active.is_held() {
+                        self.reset();
+                    }
+                }
+            }
+        }
+
+        if is_mod {
             return match self.phase {
                 ChordPhase::Idle => {
                     if selected.key.is_none() && selected.matches_modifiers(&self.mods) {
@@ -454,6 +478,38 @@ mod tests {
             Some(ChordEvent::Broken)
         );
     }
+
+    #[test]
+    fn stuck_modifier_self_heals_on_sync() {
+        let mut mods = ChordMods::default();
+        mods.lwin = true;
+        mods.rctrl = true;
+        assert!(mods.win());
+        assert!(mods.ctrl());
+
+        // 当物理按键并未按下时，sync_physical 会自动清除虚假按键
+        mods.sync_physical();
+        assert!(!mods.lwin);
+        assert!(!mods.rctrl);
+        assert!(mods.clear());
+    }
+
+    #[test]
+    fn recovers_from_stuck_win_key_and_matches_ctrl_alt() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 模拟 Win+L 锁屏后遗留的 lwin=true
+        state.mods.lwin = true;
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        // 在没有 sync_physical 时，按下 Alt 后因 lwin=true 不匹配
+        assert_eq!(state.handle(WM_SYSKEYDOWN, LALT, shortcut), None);
+
+        // 执行 sync_physical 后，物理同步会立刻修正 lwin
+        state.mods.lwin = true;
+        state.mods.sync_physical();
+        assert!(!state.mods.win());
+    }
 }
 
 unsafe extern "system" fn chord_keyboard_hook(
@@ -487,16 +543,64 @@ unsafe extern "system" fn chord_keyboard_hook(
     unsafe { CallNextHookEx(None, hook_code, wparam, lparam) }
 }
 
+fn rearm_hook(hook: &mut windows::Win32::UI::WindowsAndMessaging::HHOOK) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    };
+    if !hook.is_invalid() {
+        let _ = unsafe { UnhookWindowsHookEx(*hook) };
+    }
+    match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(chord_keyboard_hook), None, 0) } {
+        Ok(new_hook) => {
+            *hook = new_hook;
+            tracing::info!("已重新安装全局键盘钩子 (WH_KEYBOARD_LL)");
+        }
+        Err(error) => {
+            tracing::error!("重新安装全局键盘钩子失败：{error}");
+        }
+    }
+}
+
 fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), String>>) {
+    use windows::core::w;
+    use windows::Win32::System::RemoteDesktop::{
+        WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    };
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetMessageW, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_NOREMOVE,
-        WH_KEYBOARD_LL,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PeekMessageW,
+        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, MSG,
+        PM_NOREMOVE, WH_KEYBOARD_LL, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_OVERLAPPEDWINDOW,
+        WTS_SESSION_LOCK, WTS_SESSION_LOGON, WTS_SESSION_UNLOCK,
     };
+
+    const PBT_APMRESUMEAUTOMATIC: u32 = 0x0012;
+    const PBT_APMRESUMESUSPEND: u32 = 0x0007;
 
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut message = MSG::default();
     let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+
+    // 创建隐藏窗口以监听 Windows 会话锁屏/解锁 (WM_WTSSESSION_CHANGE) 与系统休眠唤醒 (WM_POWERBROADCAST)
+    let session_window = unsafe {
+        CreateWindowExW(
+            Default::default(),
+            w!("STATIC"),
+            w!("BlurtHotkeySessionWatcher"),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    if let Ok(hwnd) = session_window {
+        let _ = unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) };
+    }
 
     let (tx, rx) = std::sync::mpsc::channel::<ChordEvent>();
     let dispatch_app = app.clone();
@@ -517,7 +621,7 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
     }
 
     CHORD_HOOK_THREAD_ID.store(thread_id, Ordering::SeqCst);
-    let hook =
+    let mut hook: HHOOK =
         match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(chord_keyboard_hook), None, 0) } {
             Ok(hook) => hook,
             Err(error) => {
@@ -539,30 +643,69 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
         if result.0 == 0 {
             break;
         }
-        if message.message != WM_CHORD_KEY {
-            continue;
-        }
 
-        if app
-            .state::<crate::app::AppState>()
-            .hotkey_capture
-            .load(Ordering::SeqCst)
-        {
-            chord.clear_for_capture();
-            continue;
-        }
+        let _ = unsafe { TranslateMessage(&message) };
+        let _ = unsafe { DispatchMessageW(&message) };
 
-        let shortcut = configured_shortcut(&app);
-        if let Some(event) =
-            chord.handle(message.lParam.0 as u32, message.wParam.0 as u32, shortcut)
-        {
-            let _ = tx.send(event);
+        match message.message {
+            WM_CHORD_KEY => {
+                if app
+                    .state::<crate::app::AppState>()
+                    .hotkey_capture
+                    .load(Ordering::SeqCst)
+                {
+                    chord.clear_for_capture();
+                    continue;
+                }
+
+                let shortcut = configured_shortcut(&app);
+                if let Some(event) =
+                    chord.handle(message.lParam.0 as u32, message.wParam.0 as u32, shortcut)
+                {
+                    let _ = tx.send(event);
+                }
+            }
+            WM_WTSSESSION_CHANGE => {
+                let session_event = message.wParam.0 as u32;
+                match session_event {
+                    WTS_SESSION_LOCK => {
+                        tracing::info!(
+                            "检测到系统锁屏 (WTS_SESSION_LOCK) → 清空按键状态并取消录音"
+                        );
+                        chord.clear_for_capture();
+                        crate::app::esc_pressed(&app);
+                    }
+                    WTS_SESSION_UNLOCK | WTS_SESSION_LOGON => {
+                        tracing::info!(
+                            "检测到系统解锁/登录 (0x{session_event:X}) → 重置按键状态并重装键盘钩子"
+                        );
+                        chord.clear_for_capture();
+                        rearm_hook(&mut hook);
+                    }
+                    _ => {}
+                }
+            }
+            WM_POWERBROADCAST => {
+                let power_event = message.wParam.0 as u32;
+                if power_event == PBT_APMRESUMEAUTOMATIC || power_event == PBT_APMRESUMESUSPEND {
+                    tracing::info!(
+                        "检测到系统从休眠/睡眠恢复 (0x{power_event:X}) → 重置按键状态并重装键盘钩子"
+                    );
+                    chord.clear_for_capture();
+                    rearm_hook(&mut hook);
+                }
+            }
+            _ => {}
         }
     }
 
     CHORD_HOOK_THREAD_ID.store(0, Ordering::SeqCst);
     if let Err(error) = unsafe { UnhookWindowsHookEx(hook) } {
         tracing::error!("卸载全局快捷键钩子失败：{error}");
+    }
+    if let Ok(hwnd) = session_window {
+        let _ = unsafe { WTSUnRegisterSessionNotification(hwnd) };
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
     tracing::warn!("全局快捷键钩子已停止（正常情况下应常驻）");
 }

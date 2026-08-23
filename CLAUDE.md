@@ -29,9 +29,11 @@ Do not run a release build during intermediate iterations. After implementation 
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 Set-Location src-tauri
 cargo build --profile release-fast
-Get-Process Blurt -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process Blurt, blurt -ErrorAction SilentlyContinue | Stop-Process -Force
 foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; try { Copy-Item target\release-fast\blurt.exe ..\dist\Blurt.exe -Force -ErrorAction Stop; break } catch {} }
-Start-Process ..\dist\Blurt.exe
+Start-Process -FilePath "..\dist\Blurt.exe" -WorkingDirectory "..\dist"
+Start-Sleep -Seconds 1
+Get-Process Blurt, blurt -ErrorAction SilentlyContinue
 ```
 
 Rebuild notes:
@@ -41,6 +43,7 @@ Rebuild notes:
 - Do not run `cargo clean` during routine development or deployment. It removes many gigabytes of reusable build artifacts and makes the next build start from scratch. Use it only when the user explicitly requests disk cleanup or when the cache is demonstrably corrupted.
 - Daily deployments use `[profile.release-fast]`, which disables LTO and retains incremental artifacts. Full `[profile.release]` builds still use LTO and are reserved for explicitly requested optimized releases.
 - Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
+- 部署后必须拉起并运行软件：每次完成 release-fast 构建并覆盖 `dist\Blurt.exe` 后，必须将新版本软件打开运行，并通过 `Get-Process` 确认进程已成功启动，绝对不能构建/覆盖完成后不打开软件就结束任务。
 - If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
 
 Worktree hygiene:
