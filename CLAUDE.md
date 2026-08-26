@@ -30,6 +30,7 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 Set-Location src-tauri
 cargo build --profile release-fast
 Get-Process Blurt, blurt -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
 foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; try { Copy-Item target\release-fast\blurt.exe ..\dist\Blurt.exe -Force -ErrorAction Stop; break } catch {} }
 Start-Process -FilePath "..\dist\Blurt.exe" -WorkingDirectory "..\dist"
 Start-Sleep -Seconds 1
@@ -44,6 +45,7 @@ Rebuild notes:
 - Daily deployments use `[profile.release-fast]`, which disables LTO and retains incremental artifacts. Full `[profile.release]` builds still use LTO and are reserved for explicitly requested optimized releases.
 - Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
 - 部署后必须拉起并运行软件：每次完成 release-fast 构建并覆盖 `dist\Blurt.exe` 后，必须将新版本软件打开运行，并通过 `Get-Process` 确认进程已成功启动，绝对不能构建/覆盖完成后不打开软件就结束任务。
+- 防卡死与进程管理规范：拉起 `Blurt.exe` 时严禁添加 `-Wait` 参数或使用同步管道重定向捕获，必须让其作为独立原生 GUI 进程在后台运行；关闭旧进程后必须预留 `Start-Sleep -Seconds 1` 等待单实例命名管道（`tauri_plugin_single_instance`）完全释放，防止新进程误判为已存在实例而秒退；严禁残留阻塞式后台任务。
 - If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
 
 Worktree hygiene:

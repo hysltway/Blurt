@@ -212,6 +212,29 @@ struct ChordMods {
     rwin: bool,
 }
 
+impl fmt::Display for ChordMods {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts = Vec::with_capacity(4);
+        if self.ctrl() {
+            parts.push("Ctrl");
+        }
+        if self.alt() {
+            parts.push("Alt");
+        }
+        if self.shift() {
+            parts.push("Shift");
+        }
+        if self.win() {
+            parts.push("Win");
+        }
+        if parts.is_empty() {
+            f.write_str("None")
+        } else {
+            f.write_str(&parts.join("+"))
+        }
+    }
+}
+
 impl ChordMods {
     fn set(&mut self, vk: u32, pressed: bool) -> bool {
         match vk {
@@ -248,16 +271,32 @@ impl ChordMods {
         !self.ctrl() && !self.alt() && !self.shift() && !self.win()
     }
 
-    /// 同步硬件物理按键状态，自动修正因锁屏（Win+L/Ctrl+Alt+Del）、UAC 或会话切换丢失的 KeyUp 事件。
+    /// 仅在物理按键确实未按下时清除虚假按键（修正锁屏 Win+L 等场景遗留的修饰键）。
     fn sync_physical(&mut self) {
-        self.lshift &= vk_is_down(0xA0) || vk_is_down(VK_SHIFT);
-        self.rshift &= vk_is_down(0xA1) || vk_is_down(VK_SHIFT);
-        self.lctrl &= vk_is_down(0xA2) || vk_is_down(VK_CONTROL);
-        self.rctrl &= vk_is_down(0xA3) || vk_is_down(VK_CONTROL);
-        self.lalt &= vk_is_down(0xA4) || vk_is_down(VK_MENU);
-        self.ralt &= vk_is_down(0xA5) || vk_is_down(VK_MENU);
-        self.lwin &= vk_is_down(VK_LWIN);
-        self.rwin &= vk_is_down(VK_RWIN);
+        if self.lshift && !vk_is_down(0xA0) && !vk_is_down(VK_SHIFT) {
+            self.lshift = false;
+        }
+        if self.rshift && !vk_is_down(0xA1) && !vk_is_down(VK_SHIFT) {
+            self.rshift = false;
+        }
+        if self.lctrl && !vk_is_down(0xA2) && !vk_is_down(VK_CONTROL) {
+            self.lctrl = false;
+        }
+        if self.rctrl && !vk_is_down(0xA3) && !vk_is_down(VK_CONTROL) {
+            self.rctrl = false;
+        }
+        if self.lalt && !vk_is_down(0xA4) && !vk_is_down(VK_MENU) {
+            self.lalt = false;
+        }
+        if self.ralt && !vk_is_down(0xA5) && !vk_is_down(VK_MENU) {
+            self.ralt = false;
+        }
+        if self.lwin && !vk_is_down(VK_LWIN) {
+            self.lwin = false;
+        }
+        if self.rwin && !vk_is_down(VK_RWIN) {
+            self.rwin = false;
+        }
     }
 }
 
@@ -309,13 +348,6 @@ impl ChordState {
         let is_mod = self.mods.set(vk, pressed);
         if cfg!(not(test)) {
             self.mods.sync_physical();
-            if self.phase == ChordPhase::Active {
-                if let Some(active) = self.active_shortcut {
-                    if !active.is_held() {
-                        self.reset();
-                    }
-                }
-            }
         }
 
         if is_mod {
@@ -329,7 +361,7 @@ impl ChordState {
                     }
                 }
                 ChordPhase::Active => {
-                    let active = self.active_shortcut.expect("active shortcut is present");
+                    let active = self.active_shortcut.unwrap_or(selected);
                     if active.matches_modifiers(&self.mods) {
                         None
                     } else if pressed {
@@ -341,10 +373,15 @@ impl ChordState {
                     }
                 }
                 ChordPhase::Contaminated => {
-                    if self.mods.clear() {
+                    if selected.key.is_none() && selected.matches_modifiers(&self.mods) {
+                        self.activate(selected);
+                        Some(ChordEvent::Pressed)
+                    } else if self.mods.clear() || !pressed {
                         self.reset();
+                        None
+                    } else {
+                        None
                     }
-                    None
                 }
             };
         }
@@ -359,7 +396,7 @@ impl ChordState {
                 }
             }
             ChordPhase::Active => {
-                let active = self.active_shortcut.expect("active shortcut is present");
+                let active = self.active_shortcut.unwrap_or(selected);
                 if active.key == Some(vk) {
                     if pressed {
                         None
@@ -374,7 +411,17 @@ impl ChordState {
                     None
                 }
             }
-            ChordPhase::Contaminated => None,
+            ChordPhase::Contaminated => {
+                if pressed && selected.key == Some(vk) && selected.matches_modifiers(&self.mods) {
+                    self.activate(selected);
+                    Some(ChordEvent::Pressed)
+                } else if self.mods.clear() {
+                    self.reset();
+                    None
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -510,6 +557,75 @@ mod tests {
         state.mods.sync_physical();
         assert!(!state.mods.win());
     }
+
+    #[test]
+    fn contaminated_phase_self_heals_when_modifier_repressed() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 1. 用户按下 Ctrl + Alt 触发快捷键
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(
+            state.handle(WM_SYSKEYDOWN, LALT, shortcut),
+            Some(ChordEvent::Pressed)
+        );
+
+        // 2. 此时用户按下其他键（如日常截图 Ctrl+Alt+A），状态进入 Contaminated，录音打断
+        assert_eq!(
+            state.handle(WM_KEYDOWN, KEY_A, shortcut),
+            Some(ChordEvent::Broken)
+        );
+        assert_eq!(state.handle(WM_KEYUP, KEY_A, shortcut), None);
+
+        // 3. 用户松开 Alt，但手指依然按住 Ctrl
+        assert_eq!(state.handle(WM_SYSKEYUP, LALT, shortcut), None);
+
+        // 4. 用户再次按下 Alt，意图重新触发 Ctrl+Alt 进行语音输入
+        // 验证自愈机制：即使 Ctrl 一直未松开，再次按下 Alt 能够立即自愈并触发 Pressed！
+        let event = state.handle(WM_SYSKEYDOWN, LALT, shortcut);
+        assert_eq!(
+            event,
+            Some(ChordEvent::Pressed),
+            "自愈：在 Contaminated 态下重新按下快捷键应成功触发 Pressed"
+        );
+        // 5. 再次松开 Alt 能够正常发出 Released
+        assert_eq!(
+            state.handle(WM_SYSKEYUP, LALT, shortcut),
+            Some(ChordEvent::Released)
+        );
+    }
+
+    #[test]
+    fn primary_key_shortcut_self_heals_from_contaminated() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Shift+K");
+
+        // 1. 用户按下 Ctrl+Shift+K
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYDOWN, LSHIFT, shortcut), None);
+        assert_eq!(
+            state.handle(WM_KEYDOWN, KEY_K, shortcut),
+            Some(ChordEvent::Pressed)
+        );
+
+        // 2. 误触 A 键，被打断进入 Contaminated
+        assert_eq!(
+            state.handle(WM_KEYDOWN, KEY_A, shortcut),
+            Some(ChordEvent::Broken)
+        );
+        assert_eq!(state.handle(WM_KEYUP, KEY_A, shortcut), None);
+
+        // 3. 用户再次按下 K，自愈并触发 Pressed
+        assert_eq!(
+            state.handle(WM_KEYDOWN, KEY_K, shortcut),
+            Some(ChordEvent::Pressed)
+        );
+        // 4. 松开 K 触发 Released
+        assert_eq!(
+            state.handle(WM_KEYUP, KEY_K, shortcut),
+            Some(ChordEvent::Released)
+        );
+    }
 }
 
 unsafe extern "system" fn chord_keyboard_hook(
@@ -568,10 +684,10 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
     };
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PeekMessageW,
-        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, MSG,
-        PM_NOREMOVE, WH_KEYBOARD_LL, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_OVERLAPPEDWINDOW,
-        WTS_SESSION_LOCK, WTS_SESSION_LOGON, WTS_SESSION_UNLOCK,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer, PeekMessageW,
+        SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK,
+        MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_POWERBROADCAST, WM_TIMER, WM_WTSSESSION_CHANGE,
+        WS_OVERLAPPEDWINDOW, WTS_SESSION_LOCK, WTS_SESSION_LOGON, WTS_SESSION_UNLOCK,
     };
 
     const PBT_APMRESUMEAUTOMATIC: u32 = 0x0012;
@@ -609,9 +725,18 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
         .spawn(move || {
             for event in rx {
                 match event {
-                    ChordEvent::Pressed => crate::app::hotkey_pressed(&dispatch_app),
-                    ChordEvent::Released => crate::app::hotkey_released(&dispatch_app, None),
-                    ChordEvent::Broken => crate::app::chord_broken(&dispatch_app),
+                    ChordEvent::Pressed => {
+                        tracing::info!("快捷键事件：Pressed → 触发录音");
+                        crate::app::hotkey_pressed(&dispatch_app);
+                    }
+                    ChordEvent::Released => {
+                        tracing::debug!("快捷键事件：Released → 松开");
+                        crate::app::hotkey_released(&dispatch_app, None);
+                    }
+                    ChordEvent::Broken => {
+                        tracing::info!("快捷键事件：Broken → 误触其他按键，打断录音");
+                        crate::app::chord_broken(&dispatch_app);
+                    }
                 }
             }
         });
@@ -633,6 +758,9 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
     let _ = ready.send(Ok(()));
     tracing::info!("全局快捷键低级键盘钩子已启动（线程 {thread_id}）");
 
+    // 启动 30 秒看门狗定时器，定期清理按键漂移并自愈异常状态
+    let watchdog_timer = unsafe { SetTimer(None, 0, 30_000, None) };
+
     let mut chord = ChordState::default();
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
@@ -649,20 +777,71 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
 
         match message.message {
             WM_CHORD_KEY => {
+                let vk = message.wParam.0 as u32;
+                let msg_type = message.lParam.0 as u32;
+                let pressed = matches!(msg_type, WM_KEYDOWN | WM_SYSKEYDOWN);
+                let shortcut = configured_shortcut(&app);
+
                 if app
                     .state::<crate::app::AppState>()
                     .hotkey_capture
                     .load(Ordering::SeqCst)
                 {
+                    tracing::info!("[快捷键拦截] 设置页热键录制中 (hotkey_capture=true)，忽略按键 vk=0x{vk:02X} ({})", key_name(vk));
                     chord.clear_for_capture();
                     continue;
                 }
 
-                let shortcut = configured_shortcut(&app);
-                if let Some(event) =
-                    chord.handle(message.lParam.0 as u32, message.wParam.0 as u32, shortcut)
-                {
+                let before_phase = chord.phase;
+                let before_mods = chord.mods;
+                let event = chord.handle(msg_type, vk, shortcut);
+
+                let is_modifier_key = matches!(vk, 0x10..=0x12 | 0x5B..=0x5C | 0xA0..=0xA5);
+                let is_primary_key = shortcut.key == Some(vk);
+
+                if let Some(event) = event {
+                    tracing::info!(
+                        "[快捷键事件] 产生事件: {:?} | 按键: vk=0x{:02X} ({}) | 修饰键: {} → {} | 状态: {:?} → {:?} | 目标: {}",
+                        event,
+                        vk,
+                        key_name(vk),
+                        before_mods,
+                        chord.mods,
+                        before_phase,
+                        chord.phase,
+                        shortcut
+                    );
                     let _ = tx.send(event);
+                } else if is_modifier_key || is_primary_key {
+                    // 当用户按下了与快捷键相关的按键，但未能产生事件时，详细记录状态用于排查
+                    tracing::info!(
+                        "[按键处理] 未产生事件 | 按键: vk=0x{:02X} ({}, pressed={}) | 修饰键: {} → {} | 状态: {:?} → {:?} | 期望: {}",
+                        vk,
+                        key_name(vk),
+                        pressed,
+                        before_mods,
+                        chord.mods,
+                        before_phase,
+                        chord.phase,
+                        shortcut
+                    );
+                }
+            }
+            WM_TIMER => {
+                // 定时自愈与状态维护
+                chord.mods.sync_physical();
+                // 兜底：如果设置窗口不存在但 hotkey_capture 处于 true，自动恢复
+                let state = app.state::<crate::app::AppState>();
+                if state.hotkey_capture.load(Ordering::SeqCst) {
+                    let settings_open = app
+                        .get_webview_window("settings")
+                        .is_some_and(|w| w.is_visible().unwrap_or(false));
+                    if !settings_open {
+                        tracing::warn!(
+                            "看门狗检测到设置窗口已关闭，自动重置 hotkey_capture 录制状态"
+                        );
+                        state.hotkey_capture.store(false, Ordering::SeqCst);
+                    }
                 }
             }
             WM_WTSSESSION_CHANGE => {
@@ -697,6 +876,10 @@ fn run_chord_hook(app: AppHandle, ready: std::sync::mpsc::SyncSender<Result<(), 
             }
             _ => {}
         }
+    }
+
+    if watchdog_timer != 0 {
+        let _ = unsafe { KillTimer(None, watchdog_timer) };
     }
 
     CHORD_HOOK_THREAD_ID.store(0, Ordering::SeqCst);

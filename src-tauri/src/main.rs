@@ -111,12 +111,25 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Blurt 启动失败");
 
-    app.run(|_handle, event| {
-        // 关闭所有窗口也不退出（常驻托盘）；只有显式 app.exit() 才退出
-        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
-            if code.is_none() {
-                api.prevent_exit();
+    app.run(|app_handle, event| {
+        match &event {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed | tauri::WindowEvent::CloseRequested { .. },
+                ..
+            } if label == "settings" => {
+                app_handle
+                    .state::<app::AppState>()
+                    .hotkey_capture
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
             }
+            // 关闭所有窗口也不退出（常驻托盘）；只有显式 app.exit() 才退出
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+            _ => {}
         }
     });
 }

@@ -209,21 +209,41 @@ pub fn hotkey_pressed(app: &AppHandle) {
 
     let act = match &mut *session {
         Session::Idle => match config::load_doubao_api_key() {
-            Ok(Some(_)) => PressAction::Start,
-            _ => PressAction::Flash("error", 1200, true),
+            Ok(Some(_)) => {
+                tracing::info!("[快捷键触发] 空闲状态下按下快捷键 → 开始录音");
+                PressAction::Start
+            }
+            _ => {
+                tracing::warn!("[快捷键触发] 未配置有效 API Key，闪烁错误提示并打开设置");
+                PressAction::Flash("error", 1200, true)
+            }
         },
         Session::Recording {
-            awaiting_release, ..
+            toggle_mode,
+            awaiting_release,
+            gen,
+            ..
         } => {
-            if *awaiting_release {
-                PressAction::Nothing // 键盘自动重复
+            if *toggle_mode {
+                // 切换模式下再次按下快捷键 → 明确要求结束录音进入识别！
+                tracing::info!(
+                    "[快捷键触发] 切换模式下再次按下快捷键 → 提前结束录音进入识别 (gen={gen})"
+                );
+                *awaiting_release = true;
+                PressAction::Stop
+            } else if *awaiting_release {
+                tracing::debug!("[快捷键触发] 按住说话中忽略键盘自动重复 (gen={gen})");
+                PressAction::Nothing
             } else {
-                // 切换模式的第二次按下 → 结束并识别
+                tracing::info!("[快捷键触发] 录音中再次按下快捷键 → 结束录音进入识别 (gen={gen})");
                 *awaiting_release = true;
                 PressAction::Stop
             }
         }
-        Session::Processing { .. } => PressAction::Nothing,
+        Session::Processing { gen } => {
+            tracing::info!("[快捷键触发] 正在处理识别中，忽略新的按键触发 (gen={gen})");
+            PressAction::Nothing
+        }
     };
 
     match act {
@@ -257,20 +277,43 @@ pub fn hotkey_released(app: &AppHandle, expected_gen: Option<u64>) {
             ..
         } => {
             if expected_gen.map_or(false, |g| g != *gen) {
+                tracing::debug!(
+                    "[快捷键松开] 忽略过期的松开事件 (expected={:?}, current={gen})",
+                    expected_gen
+                );
                 return;
             }
             if !*awaiting_release {
-                return; // 已处理过（插件事件与轮询兜底可能都来一次）
+                tracing::debug!("[快捷键松开] 已处理过该松开事件 (gen={gen})");
+                return;
             }
             *awaiting_release = false;
-            if t0.elapsed().as_millis() >= TAP_MS {
-                true // 按住说话：松开 → 识别
+            let elapsed_ms = t0.elapsed().as_millis();
+            if elapsed_ms >= TAP_MS {
+                tracing::info!(
+                    "[快捷键松开] 按住说话松开 (按住时长 {}ms ≥ {}ms) → 结束录音并识别 (gen={gen})",
+                    elapsed_ms,
+                    TAP_MS
+                );
+                true
             } else {
-                *toggle_mode = true; // 轻点：进入切换模式，继续录音
+                tracing::info!(
+                    "[快捷键松开] 轻点模式松开 (按住时长 {}ms < {}ms) → 进入切换模式继续录音 (gen={gen})",
+                    elapsed_ms,
+                    TAP_MS
+                );
+                *toggle_mode = true;
                 false
             }
         }
-        _ => return,
+        Session::Processing { gen } => {
+            tracing::debug!("[快捷键松开] 处于 Processing 态，忽略松开事件 (gen={gen})");
+            return;
+        }
+        Session::Idle => {
+            tracing::debug!("[快捷键松开] 处于 Idle 态，忽略松开事件");
+            return;
+        }
     };
 
     if stop {
@@ -290,6 +333,7 @@ pub fn chord_broken(app: &AppHandle) {
         }
     );
     if cancel {
+        tracing::info!("[快捷键打断] 检测到快捷键中途误触其他按键，取消当前录音");
         esc_pressed(app);
     }
 }
@@ -297,6 +341,7 @@ pub fn chord_broken(app: &AppHandle) {
 pub fn esc_pressed(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut session = state.session.lock();
+    tracing::info!("[会话取消] 收到 Esc 或取消指令，重置为 Idle");
     match std::mem::replace(&mut *session, Session::Idle) {
         Session::Recording { rec, .. } => {
             state.gen.fetch_add(1, Ordering::SeqCst);
