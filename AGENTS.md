@@ -67,4 +67,9 @@ cmd /c rmdir /s /q ".claude\worktrees\<worktree-name>"
 git worktree prune
 ```
 
+## 5. Git 提交与文件操作规范
+
+- **严禁擅自 Git 提交**：只有在用户明确发出提交指令后方可执行 `git commit`，严禁在未得到明确要求的情况下自行创建提交。
+- **严禁擅自恢复已删除文件**：对于已经删除的文件，严禁自行执行恢复操作（如 `git restore`、`git checkout` 或重新创建），除非用户明确要求恢复。
+
 所有检查必须真实通过，严禁在检查失败或工具不可用时谎报通过。
