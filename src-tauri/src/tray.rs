@@ -144,7 +144,7 @@ pub fn open_settings(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    let win = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Blurt 设置")
         .inner_size(1040.0, 700.0)
         .min_inner_size(360.0, 600.0)
@@ -154,6 +154,41 @@ pub fn open_settings(app: &AppHandle) {
         .center()
         // 浅色主题 + 同色底（避免加载闪烁）
         .theme(Some(tauri::Theme::Light))
-        .background_color(tauri::webview::Color(245, 245, 245, 255))
+        .background_color(tauri::webview::Color(248, 250, 252, 255))
         .build();
+
+    #[cfg(windows)]
+    if let Ok(w) = &win {
+        if let Ok(h) = w.hwnd() {
+            unsafe {
+                use windows::Win32::Foundation::{COLORREF, HWND};
+                use windows::Win32::Graphics::Dwm::{
+                    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR,
+                    DWMWA_TEXT_COLOR,
+                };
+                let hwnd = HWND(h.0 as isize as *mut core::ffi::c_void);
+                // 标题栏背景色 #F8FAFC (COLORREF 0x00FCFAF8)
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_CAPTION_COLOR,
+                    &COLORREF(0x00FCFAF8) as *const _ as *const _,
+                    core::mem::size_of::<COLORREF>() as u32,
+                );
+                // 标题栏文字色 #0F172A (COLORREF 0x002A170F)
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_TEXT_COLOR,
+                    &COLORREF(0x002A170F) as *const _ as *const _,
+                    core::mem::size_of::<COLORREF>() as u32,
+                );
+                // 窗口边框色 #E2E8F0 (COLORREF 0x00F0E8E2)
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_BORDER_COLOR,
+                    &COLORREF(0x00F0E8E2) as *const _ as *const _,
+                    core::mem::size_of::<COLORREF>() as u32,
+                );
+            }
+        }
+    }
 }

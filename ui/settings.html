@@ -20,6 +20,80 @@
 </header>
 
 <main class="page-shell">
+  <section class="settings-panel" aria-label="设置">
+    <div class="primary-settings">
+      <section class="settings-section" aria-labelledby="inputHeading">
+        <h2 id="inputHeading">输入</h2>
+        <div class="setting-row">
+          <label for="btnCaptureHotkey">快捷键</label>
+          <div class="shortcut-editor">
+            <output class="keycaps" id="hotkeyValue" aria-live="polite"></output>
+            <button class="btn" id="btnCaptureHotkey" type="button">修改</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="field-label">写入方式</div>
+          <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本写入方式">
+            <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
+            <label><input type="radio" name="injectMode" value="type" /><span>键入</span></label>
+            <label><input type="radio" name="injectMode" value="paste" /><span>粘贴</span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="autostart">开机自启</label>
+          <div class="setting-control">
+            <div class="switch">
+              <input type="checkbox" id="autostart" aria-label="开机自启" />
+              <label class="slider" for="autostart"></label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="recognitionHeading">
+        <h2 id="recognitionHeading">识别</h2>
+        <div class="setting-row">
+          <label for="micDevice">麦克风</label>
+          <select id="micDevice"><option value="">系统默认</option></select>
+        </div>
+        <div class="setting-row">
+          <label for="autoStop">静音结束录音</label>
+          <div class="range-wrap">
+            <input type="range" id="autoStop" min="0" max="6" step="0.5" />
+            <span class="val" id="autoStopVal">2 秒</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label for="maxRecord">最长录音</label>
+          <div class="range-wrap">
+            <input type="range" id="maxRecord" min="15" max="180" step="15" />
+            <span class="val" id="maxRecordVal">120 秒</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="secondary-settings" aria-labelledby="serviceHeading">
+      <h2 id="serviceHeading">服务</h2>
+      <div class="setting-row">
+        <label for="hotwords">热词</label>
+        <textarea id="hotwords" rows="2" placeholder="Claude, Tauri, Rust, cloud=>claude" spellcheck="false"></textarea>
+      </div>
+      <div class="setting-row">
+        <div class="field-label">豆包服务</div>
+        <div class="setting-control">
+          <button class="btn" id="btnEditApiKey" type="button" aria-expanded="false" aria-controls="credentialEditor">更换密钥</button>
+        </div>
+      </div>
+      <div class="credential-editor" id="credentialEditor" hidden>
+        <label for="doubaoApiKey">API Key</label>
+        <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
+        <button class="btn primary" id="btnSaveApiKey" type="button">保存</button>
+        <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
+      </div>
+    </div>
+  </section>
+
   <section class="usage-overview" aria-label="使用统计">
     <div class="metric-grid">
       <article class="metric-card metric-duration">
@@ -103,80 +177,6 @@
           </div>
         </div>
       </figure>
-    </div>
-  </section>
-
-  <section class="settings-panel" aria-label="设置">
-    <div class="primary-settings">
-      <section class="settings-section" aria-labelledby="inputHeading">
-        <h2 id="inputHeading">输入</h2>
-        <div class="setting-row">
-          <label for="btnCaptureHotkey">快捷键</label>
-          <div class="shortcut-editor">
-            <output class="keycaps" id="hotkeyValue" aria-live="polite"></output>
-            <button class="btn" id="btnCaptureHotkey" type="button">修改</button>
-          </div>
-        </div>
-        <div class="setting-row">
-          <div class="field-label">写入方式</div>
-          <div class="seg" id="injectSeg" role="radiogroup" aria-label="文本写入方式">
-            <label><input type="radio" name="injectMode" value="auto" /><span>智能</span></label>
-            <label><input type="radio" name="injectMode" value="type" /><span>键入</span></label>
-            <label><input type="radio" name="injectMode" value="paste" /><span>粘贴</span></label>
-          </div>
-        </div>
-        <div class="setting-row">
-          <label for="autostart">开机自启</label>
-          <div class="setting-control">
-            <div class="switch">
-              <input type="checkbox" id="autostart" aria-label="开机自启" />
-              <label class="slider" for="autostart"></label>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="settings-section" aria-labelledby="recognitionHeading">
-        <h2 id="recognitionHeading">识别</h2>
-        <div class="setting-row">
-          <label for="micDevice">麦克风</label>
-          <select id="micDevice"><option value="">系统默认</option></select>
-        </div>
-        <div class="setting-row">
-          <label for="autoStop">静音结束录音</label>
-          <div class="range-wrap">
-            <input type="range" id="autoStop" min="0" max="6" step="0.5" />
-            <span class="val" id="autoStopVal">2 秒</span>
-          </div>
-        </div>
-        <div class="setting-row">
-          <label for="maxRecord">最长录音</label>
-          <div class="range-wrap">
-            <input type="range" id="maxRecord" min="15" max="180" step="15" />
-            <span class="val" id="maxRecordVal">120 秒</span>
-          </div>
-        </div>
-      </section>
-    </div>
-
-    <div class="secondary-settings" aria-labelledby="serviceHeading">
-      <h2 id="serviceHeading">服务</h2>
-      <div class="setting-row">
-        <label for="hotwords">热词</label>
-        <textarea id="hotwords" rows="2" placeholder="Claude, Tauri, Rust, cloud=>claude" spellcheck="false"></textarea>
-      </div>
-      <div class="setting-row">
-        <div class="field-label">豆包服务</div>
-        <div class="setting-control">
-          <button class="btn" id="btnEditApiKey" type="button" aria-expanded="false" aria-controls="credentialEditor">更换密钥</button>
-        </div>
-      </div>
-      <div class="credential-editor" id="credentialEditor" hidden>
-        <label for="doubaoApiKey">API Key</label>
-        <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
-        <button class="btn primary" id="btnSaveApiKey" type="button">保存</button>
-        <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
-      </div>
     </div>
   </section>
 </main>

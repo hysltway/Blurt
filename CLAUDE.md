@@ -1,55 +1,55 @@
 # Agent 仓库开发规范
 
-## 1. 代码格式化与测试（必须执行）
+## 1. 代码格式化与测试
 
-每次修改 Rust 代码后必须执行格式化：
-
+- **修改 Rust 代码后必须执行格式化**：
 ```powershell
 cargo fmt --manifest-path src-tauri/Cargo.toml --all
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 ```
 
-修改 Rust 代码或 Cargo 配置后必须执行测试：
+- **测试执行策略**：
+  - **修改 Rust 代码或 Cargo 配置**：必须执行 `cargo test --manifest-path src-tauri/Cargo.toml`
+  - **纯 UI (`ui/`) 或文档修改**：**严禁执行 `cargo test`**（避免触发 Debug 依赖的全量重复编译）。
 
-```powershell
-cargo test --manifest-path src-tauri/Cargo.toml
-```
+## 2. 编译加速与资源限制
 
-## 2. 编译与部署流程
+- **全局共享缓存**：执行前必须设置 `$env:CARGO_TARGET_DIR = "$env:USERPROFILE\.cargo\target_shared\blurt"`，实现跨 Worktree 依赖秒级复用。
+- **并发线程限制**：所有 cargo 构建命令必须带 `-j 4`，防止打满 CPU/内存。
+- **路径与 Profile**：必须在 `src-tauri` 目录下执行；日常部署使用 `--profile release-fast`。严禁执行 `cargo clean`。
 
-- **日常调试验证**（仅调试编译，不发布）：
+## 3. 发布部署与进程管理
+
+修改 Rust、Cargo 或 `ui/` 代码后必须执行编译、部署并拉起软件：
+
 ```powershell
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:CARGO_TARGET_DIR = "$env:USERPROFILE\.cargo\target_shared\blurt"
 Set-Location src-tauri
-cargo build
-```
+cargo build --profile release-fast -j 4
 
-- **最终发布部署**（修改 Rust、Cargo 或 `ui/` 代码后必须执行并拉起软件；纯文档任务无需部署）：
-```powershell
-$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-Set-Location src-tauri
-cargo build --profile release-fast
+# 关闭旧进程并预留 2 秒释放 WebView2 与单实例命名管道
 Get-Process Blurt, blurt -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
+
+# 覆盖目标文件
+foreach ($i in 1..10) { try { Copy-Item "$env:CARGO_TARGET_DIR\release-fast\blurt.exe" ..\dist\Blurt.exe -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500 } }
+
+# 脱离终端作业树拉起独立 GUI 进程
+$distExe = (Resolve-Path "..\dist\Blurt.exe").Path
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$distExe`"" }
+Start-Sleep -Seconds 2
+
+# 二次触发以在前台唤出设置窗口
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$distExe`"" }
 Start-Sleep -Seconds 1
-foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; try { Copy-Item target\release-fast\blurt.exe ..\dist\Blurt.exe -Force -ErrorAction Stop; break } catch {} }
-Start-Process -FilePath "..\dist\Blurt.exe" -WorkingDirectory "..\dist"
-Start-Sleep -Seconds 1
-Get-Process Blurt, blurt -ErrorAction SilentlyContinue
+Get-Process Blurt, blurt -ErrorAction SilentlyContinue | Format-Table -AutoSize
 ```
 
-## 3. 构建与进程管理要点
-
-- **路径要求**：必须在 `src-tauri` 目录下执行 cargo（以正确加载 `+crt-static` 静态链接配置）。
-- **静态资源**：前端资源目录为 `ui/`，界面改动需重新编译打包后方能生效。
-- **禁止清理缓存**：日常严禁执行 `cargo clean`。
-- **构建 Profile**：日常部署使用 `release-fast`（禁用 LTO，保留增量缓存）。
-- **预授权部署**：日常部署无需向用户确认，直接关闭旧进程、覆盖 `dist\Blurt.exe` 并重新拉起。
-- **拉起与防卡死规范**：
-  1. 覆盖后必须启动并使用 `Get-Process` 确认进程存活，禁止构建完不拉起。
-  2. 拉起 `Blurt.exe` 严禁带 `-Wait` 参数或管道重定向，必须作为独立后台 GUI 进程运行。
-  3. 关闭旧进程后必须预留 `Start-Sleep -Seconds 1` 等待单实例命名管道完全释放，防止新进程误判秒退。
-  4. 严禁残留阻塞式后台任务。
-- **链接锁文件处理**：若构建报 `os error 5`，说明旧进程未完全退出并锁定了 exe，需强制关闭进程后重试。
+- **拉起与进程规范**：
+  1. 必须使用 `Invoke-CimMethod`（Win32_Process）拉起，禁止依赖可能被终端 Job Object 回收的命令。
+  2. 关闭旧进程后必须预留 2 秒等待 WebView2 缓存与单实例管道完全释放，防止新进程报错秒退。
+  3. 部署后必须使用 `Get-Process` 确认进程存活。
 
 ## 4. 工作区（Worktree）清理
 
