@@ -1,30 +1,30 @@
-# Claude Code Instructions
+# Agent 仓库开发规范
 
-Follow all repository rules in `AGENTS.md`.
+## 1. 代码格式化与测试（必须执行）
 
-After every Rust code change, formatting is mandatory:
+每次修改 Rust 代码后必须执行格式化：
 
 ```powershell
 cargo fmt --manifest-path src-tauri/Cargo.toml --all
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 ```
 
-After Rust code or Cargo configuration changes, also run:
+修改 Rust 代码或 Cargo 配置后必须执行测试：
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-During normal implementation, use a debug build for fast compile validation:
+## 2. 编译与部署流程
 
+- **日常调试验证**（仅调试编译，不发布）：
 ```powershell
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 Set-Location src-tauri
 cargo build
 ```
 
-Do not run a release build during intermediate iterations. After implementation and tests are complete, tasks that changed runtime Rust code, Cargo configuration, or `ui/` assets require one final fast release deployment before reporting the task as done. Documentation-only and repository-instruction-only tasks do not require a build or relaunch.
-
+- **最终发布部署**（修改 Rust、Cargo 或 `ui/` 代码后必须执行并拉起软件；纯文档任务无需部署）：
 ```powershell
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 Set-Location src-tauri
@@ -37,33 +37,34 @@ Start-Sleep -Seconds 1
 Get-Process Blurt, blurt -ErrorAction SilentlyContinue
 ```
 
-Rebuild notes:
+## 3. 构建与进程管理要点
 
-- `frontendDist` is `../ui`, so HTML/CSS/JS changes only take effect in the rebuilt exe.
-- Run cargo from inside `src-tauri`: the required `+crt-static` rustflags live in `src-tauri/.cargo/config.toml`, and cargo discovers that config by working directory.
-- Do not run `cargo clean` during routine development or deployment. It removes many gigabytes of reusable build artifacts and makes the next build start from scratch. Use it only when the user explicitly requests disk cleanup or when the cache is demonstrably corrupted.
-- Daily deployments use `[profile.release-fast]`, which disables LTO and retains incremental artifacts. Full `[profile.release]` builds still use LTO and are reserved for explicitly requested optimized releases.
-- Stop Blurt before overwriting `dist\Blurt.exe` (the running exe locks the file). Windows may hold the image lock for a while after Stop-Process, so retry the copy in a loop as shown — a single fixed sleep is not reliable, and starting the old exe after a failed copy leaves a stale build running.
-- 部署后必须拉起并运行软件：每次完成 release-fast 构建并覆盖 `dist\Blurt.exe` 后，必须将新版本软件打开运行，并通过 `Get-Process` 确认进程已成功启动，绝对不能构建/覆盖完成后不打开软件就结束任务。
-- 防卡死与进程管理规范：拉起 `Blurt.exe` 时严禁添加 `-Wait` 参数或使用同步管道重定向捕获，必须让其作为独立原生 GUI 进程在后台运行；关闭旧进程后必须预留 `Start-Sleep -Seconds 1` 等待单实例命名管道（`tauri_plugin_single_instance`）完全释放，防止新进程误判为已存在实例而秒退；严禁残留阻塞式后台任务。
-- If the build itself fails linking with `os error 5`, a running Blurt process is locking the target exe — stop it and rerun the build.
+- **路径要求**：必须在 `src-tauri` 目录下执行 cargo（以正确加载 `+crt-static` 静态链接配置）。
+- **静态资源**：前端资源目录为 `ui/`，界面改动需重新编译打包后方能生效。
+- **禁止清理缓存**：日常严禁执行 `cargo clean`。
+- **构建 Profile**：日常部署使用 `release-fast`（禁用 LTO，保留增量缓存）。
+- **预授权部署**：日常部署无需向用户确认，直接关闭旧进程、覆盖 `dist\Blurt.exe` 并重新拉起。
+- **拉起与防卡死规范**：
+  1. 覆盖后必须启动并使用 `Get-Process` 确认进程存活，禁止构建完不拉起。
+  2. 拉起 `Blurt.exe` 严禁带 `-Wait` 参数或管道重定向，必须作为独立后台 GUI 进程运行。
+  3. 关闭旧进程后必须预留 `Start-Sleep -Seconds 1` 等待单实例命名管道完全释放，防止新进程误判秒退。
+  4. 严禁残留阻塞式后台任务。
+- **链接锁文件处理**：若构建报 `os error 5`，说明旧进程未完全退出并锁定了 exe，需强制关闭进程后重试。
 
-Worktree hygiene:
+## 4. 工作区（Worktree）清理
 
-- After a `claude/*` branch is merged, remove its worktree right away — every worktree accumulates its own multi-GB `src-tauri/target`.
-- DANGER: `git worktree remove --force` follows NTFS junctions and deletes THROUGH them (it wiped the real `models\` via a worktree junction on 2026-07-27). Worktrees here may contain a `models` junction pointing at `D:\Work\Blurt\models` (created for selftest). Always unlink reparse points first — `.Delete()` removes only the link, never the target:
+分支合并后立即删除对应工作区，删除时必须先解除软链接/挂载点（ReparsePoint）以防级联删除源文件：
 
 ```powershell
 Get-ChildItem -Recurse -Force -Attributes ReparsePoint .claude\worktrees\<worktree-name> | ForEach-Object { $_.Delete() }
 git worktree remove --force .claude\worktrees\<worktree-name>
 ```
 
-- If removal fails with "Permission denied", clear file attributes first, force-delete the folder, then prune the metadata:
-
+若提示权限被拒：
 ```powershell
 attrib -r -s -h ".claude\worktrees\<worktree-name>\*" /s /d
 cmd /c rmdir /s /q ".claude\worktrees\<worktree-name>"
 git worktree prune
 ```
 
-Do not finish or commit while a required check is failing. If a required tool is unavailable, report that explicitly instead of treating the check as passed.
+所有检查必须真实通过，严禁在检查失败或工具不可用时谎报通过。
