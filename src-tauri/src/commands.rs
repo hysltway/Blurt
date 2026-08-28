@@ -1,6 +1,6 @@
 //! 设置页 / HUD 调用的 Tauri 命令。
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app::AppState;
 use crate::config::{self, Config, Stats};
@@ -35,6 +35,8 @@ pub fn set_config(
 
     *state.config.write() = config.clone();
     config::save(&config).map_err(|e| format!("保存配置失败：{e}"))?;
+
+    let _ = app.emit("config:updated", &config);
 
     Ok(())
 }
