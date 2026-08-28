@@ -68,14 +68,13 @@ impl SpeechEndpoint {
             return Ok(false);
         }
 
-        let previous_frames = self.stream.frame_scores().len();
         let completed_segments = self
             .stream
             .push(samples, audio::TARGET_SR)
             .context("FSMN-VAD streaming inference failed")?;
         self.accepted_samples = self.accepted_samples.saturating_add(samples.len() as u64);
 
-        for scores in &self.stream.frame_scores()[previous_frames..] {
+        for scores in self.stream.latest_frame_scores() {
             if is_speech_frame(scores) {
                 self.speech_run_frames = self.speech_run_frames.saturating_add(1);
                 if self.speech_run_frames * FRAME_MS >= MIN_SPEECH_MS as u32 {

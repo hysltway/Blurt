@@ -99,12 +99,12 @@ fn paste_text(text: &str) -> Result<(), String> {
     let old = cb.get_text().ok();
     cb.set_text(text.to_string())
         .map_err(|e| format!("写入剪贴板失败：{e}"))?;
-    // SetClipboardData 同步生效；30ms 只为躲开剪贴板监听器的抢占窗口
-    sleep(Duration::from_millis(30));
+    // SetClipboardData 同步生效；15ms 足够避开剪贴板监听器的抢占窗口
+    sleep(Duration::from_millis(15));
 
     let vk_v = VIRTUAL_KEY(0x56);
     send(&[key_down(VK_CONTROL), key_down(vk_v)])?;
-    sleep(Duration::from_millis(25));
+    sleep(Duration::from_millis(20));
     send(&[key_up(vk_v), key_up(VK_CONTROL)])?;
 
     // 恢复原剪贴板挪到后台：等目标应用读完再还原，不阻塞本次会话收尾
@@ -126,7 +126,7 @@ pub fn inject(text: &str, mode: &str, type_threshold: usize) -> Result<(), Strin
         return Ok(());
     }
     wait_modifiers_released(2500);
-    sleep(Duration::from_millis(30));
+    sleep(Duration::from_millis(15));
 
     match mode {
         "type" => type_text(&text),

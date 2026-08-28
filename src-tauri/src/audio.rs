@@ -902,4 +902,234 @@ mod tests {
             assert!((back - rms).abs() / rms < 1e-3, "{rms} -> {back}");
         }
     }
+
+    #[test]
+    fn benchmark_real_recordings_performance() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        use std::time::Instant;
+
+        let rec_dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Blurt")
+            .join("logs")
+            .join("recordings");
+
+        if !rec_dir.exists() {
+            println!("No recordings directory found at {:?}", rec_dir);
+            return;
+        }
+
+        let mut entries: Vec<_> = fs::read_dir(&rec_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+            .collect();
+        entries.sort();
+
+        if entries.is_empty() {
+            println!("No WAV recordings found in {:?}", rec_dir);
+            return;
+        }
+
+        println!("\n==========================================================================================");
+        println!("                         BLURT 真实长录音性能分析报告");
+        println!("==========================================================================================");
+        println!(
+            "找到 {} 条真实长录音文件，开始逐项性能压测分析...\n",
+            entries.len()
+        );
+
+        for (idx, path) in entries.iter().enumerate() {
+            let file_name = path.file_name().unwrap().to_string_lossy();
+            let mut reader = hound::WavReader::open(path).expect("打开 WAV 录音");
+            let spec = reader.spec();
+            let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
+            let duration_s = samples.len() as f64 / spec.sample_rate as f64;
+
+            println!("------------------------------------------------------------------------------------------");
+            println!("[录音 #{}] {}", idx + 1, file_name);
+            println!(
+                "  规格: 采样率={}Hz, 声道={}, 时长={:.2}s, 样本数={}",
+                spec.sample_rate,
+                spec.channels,
+                duration_s,
+                samples.len()
+            );
+
+            // 1. 静音裁剪 (trim_silence)
+            let mut trim_times = Vec::new();
+            let mut trimmed_len = 0;
+            for _ in 0..20 {
+                let input = samples.clone();
+                let t0 = Instant::now();
+                let trimmed = trim_silence(input);
+                trim_times.push(t0.elapsed().as_micros() as f64);
+                trimmed_len = trimmed.len();
+            }
+            trim_times.sort_by(|a, b| a.total_cmp(b));
+            let trim_median = trim_times[trim_times.len() / 2];
+            let trimmed_s = trimmed_len as f64 / TARGET_SR as f64;
+            println!("  [1. 静音裁剪 (trim_silence)]");
+            println!(
+                "      裁剪后有效时长: {:.2}s (裁减: {:.2}s)",
+                trimmed_s,
+                duration_s - trimmed_s
+            );
+            println!(
+                "      耗时: 中位数 {:.2} μs ({:.3} ms), 速率: {:.1}x 实时",
+                trim_median,
+                trim_median / 1000.0,
+                (duration_s * 1_000_000.0) / trim_median
+            );
+
+            // 2. 流式重采样 (StreamResampler: 48kHz -> 16kHz)
+            // 构造 48kHz 模拟信号
+            let upsampled_len = (samples.len() as f64 * (48000.0 / 16000.0)) as usize;
+            let mut fake_48k = Vec::with_capacity(upsampled_len);
+            for i in 0..upsampled_len {
+                let orig_idx = (i as f64 / 3.0) as usize;
+                fake_48k.push(samples[orig_idx.min(samples.len() - 1)]);
+            }
+            let chunk_48k = (48000.0 * 0.02) as usize; // 20ms @ 48k = 960 样本
+            let mut resample_chunk_times = Vec::new();
+            let mut rs = StreamResampler::new(48000);
+            let t_rs_total = Instant::now();
+            for chunk in fake_48k.chunks(chunk_48k) {
+                let t0 = Instant::now();
+                rs.push(chunk);
+                resample_chunk_times.push(t0.elapsed().as_micros() as f64);
+            }
+            let t_rs_finish = Instant::now();
+            let _rs_out = rs.finish();
+            let rs_finish_us = t_rs_finish.elapsed().as_micros() as f64;
+            let rs_total_us = t_rs_total.elapsed().as_micros() as f64;
+            resample_chunk_times.sort_by(|a, b| a.total_cmp(b));
+            let rs_chunk_p50 = resample_chunk_times[resample_chunk_times.len() / 2];
+            let rs_chunk_p99 =
+                resample_chunk_times[(resample_chunk_times.len() as f64 * 0.99) as usize];
+            let rs_chunk_max = *resample_chunk_times.last().unwrap();
+            println!("  [2. 流式重采样 (StreamResampler: 48kHz -> 16kHz, 20ms chunk)]");
+            println!(
+                "      20ms 分块处理耗时: p50={:.2} μs, p99={:.2} μs, max={:.2} μs",
+                rs_chunk_p50, rs_chunk_p99, rs_chunk_max
+            );
+            println!(
+                "      录音结束收尾 finish() 耗时: {:.2} μs ({:.3} ms)",
+                rs_finish_us,
+                rs_finish_us / 1000.0
+            );
+            println!(
+                "      总耗时: {:.2} ms, 吞吐量: {:.1}x 实时",
+                rs_total_us / 1000.0,
+                (duration_s * 1_000_000.0) / rs_total_us
+            );
+
+            // 3. FSMN-VAD 神经端点流式推理 (SpeechEndpoint / vad-burn)
+            let mut endpoint = match crate::endpoint::SpeechEndpoint::create(2.0) {
+                Ok(ep) => ep,
+                Err(e) => {
+                    println!("  [3. FSMN-VAD 神经端点推理]: 初始化失败: {e}");
+                    continue;
+                }
+            };
+            let chunk_16k = (16000.0 * 0.02) as usize; // 20ms @ 16k = 320 样本
+            let mut vad_chunk_times = Vec::new();
+            let t_vad_total = Instant::now();
+            for chunk in samples.chunks(chunk_16k) {
+                let t0 = Instant::now();
+                let _ = endpoint.update(chunk);
+                vad_chunk_times.push(t0.elapsed().as_micros() as f64);
+            }
+            let vad_total_us = t_vad_total.elapsed().as_micros() as f64;
+            vad_chunk_times.sort_by(|a, b| a.total_cmp(b));
+            let vad_p50 = vad_chunk_times[vad_chunk_times.len() / 2];
+            let vad_p95 = vad_chunk_times[(vad_chunk_times.len() as f64 * 0.95) as usize];
+            let vad_p99 = vad_chunk_times[(vad_chunk_times.len() as f64 * 0.99) as usize];
+            let vad_max = *vad_chunk_times.last().unwrap();
+            let vad_mean = vad_chunk_times.iter().sum::<f64>() / vad_chunk_times.len() as f64;
+            let vad_rtf = (vad_total_us / 1_000_000.0) / duration_s;
+            println!("  [3. FSMN-VAD 神经端点流式推理 (vad-burn, 20ms chunk = 320 样本)]");
+            println!("      20ms 单帧推理耗时: 均值={:.2} μs ({:.3} ms), p50={:.2} μs, p95={:.2} μs, p99={:.2} μs, max={:.2} μs", vad_mean, vad_mean / 1000.0, vad_p50, vad_p95, vad_p99, vad_max);
+            println!(
+                "      20ms 帧预算利用率: {:.2}% (单核占用)",
+                (vad_mean / 20000.0) * 100.0
+            );
+            println!(
+                "      总推理计算耗时: {:.2} ms, RTF (Real-Time Factor): {:.4} ({:.1}x 实时)",
+                vad_total_us / 1000.0,
+                vad_rtf,
+                1.0 / vad_rtf
+            );
+
+            // 4. 豆包 WebSocket 音频打包与 Gzip 压缩 (doubao.rs)
+            let chunk_200ms = 3200; // 200ms @ 16k
+            let mut pcm_convert_times = Vec::new();
+            let mut gzip_times = Vec::new();
+            let mut total_raw_bytes = 0usize;
+            let mut total_compressed_bytes = 0usize;
+            let t_doubao_total = Instant::now();
+            for chunk in samples.chunks(chunk_200ms) {
+                let t_pcm0 = Instant::now();
+                let pcm_i16: Vec<i16> = chunk
+                    .iter()
+                    .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16)
+                    .collect();
+                let mut pcm_bytes = Vec::with_capacity(pcm_i16.len() * 2);
+                for s in &pcm_i16 {
+                    pcm_bytes.extend_from_slice(&s.to_le_bytes());
+                }
+                pcm_convert_times.push(t_pcm0.elapsed().as_micros() as f64);
+                total_raw_bytes += pcm_bytes.len();
+
+                let t_gz0 = Instant::now();
+                let mut encoder =
+                    GzEncoder::new(Vec::with_capacity(pcm_bytes.len()), Compression::fast());
+                encoder.write_all(&pcm_bytes).unwrap();
+                let compressed = encoder.finish().unwrap();
+                gzip_times.push(t_gz0.elapsed().as_micros() as f64);
+                total_compressed_bytes += compressed.len();
+            }
+            let doubao_total_us = t_doubao_total.elapsed().as_micros() as f64;
+            pcm_convert_times.sort_by(|a, b| a.total_cmp(b));
+            gzip_times.sort_by(|a, b| a.total_cmp(b));
+            let pcm_p50 = pcm_convert_times[pcm_convert_times.len() / 2];
+            let gz_p50 = gzip_times[gzip_times.len() / 2];
+            let gz_p99 = gzip_times[(gzip_times.len() as f64 * 0.99) as usize];
+            let gz_max = *gzip_times.last().unwrap();
+            let gz_mean = gzip_times.iter().sum::<f64>() / gzip_times.len() as f64;
+            println!("  [4. 豆包 WebSocket 音频打包与 Gzip 压缩 (200ms chunk = 6400 bytes)]");
+            println!("      PCM 格式转换耗时: p50={:.2} μs", pcm_p50);
+            println!("      Gzip 压缩耗时 (200ms chunk): 均值={:.2} μs ({:.3} ms), p50={:.2} μs, p99={:.2} μs, max={:.2} μs", gz_mean, gz_mean / 1000.0, gz_p50, gz_p99, gz_max);
+            println!(
+                "      压缩效果: 原始 {} KB -> 压缩后 {} KB (压缩率: {:.1}%)",
+                total_raw_bytes / 1024,
+                total_compressed_bytes / 1024,
+                (total_compressed_bytes as f64 / total_raw_bytes as f64) * 100.0
+            );
+            println!(
+                "      总处理耗时: {:.2} ms, 吞吐量: {:.1}x 实时",
+                doubao_total_us / 1000.0,
+                (duration_s * 1_000_000.0) / doubao_total_us
+            );
+
+            // 5. 录音保存与磁盘 I/O (save_recent_recording)
+            let temp_test_dir =
+                std::env::temp_dir().join(format!("blurt_perf_bench_{}", std::process::id()));
+            let t_save0 = Instant::now();
+            let _ = save_recent_recording(&samples, &temp_test_dir, 5);
+            let save_ms = t_save0.elapsed().as_secs_f64() * 1000.0;
+            let _ = fs::remove_dir_all(&temp_test_dir);
+            println!("  [5. 诊断录音持久化 (save_recent_recording 磁盘写入与轮转)]");
+            println!(
+                "      WAV 编码 + 写盘 + 目录扫描清理耗时: {:.2} ms",
+                save_ms
+            );
+
+            println!();
+        }
+        println!("==========================================================================================\n");
+    }
 }
