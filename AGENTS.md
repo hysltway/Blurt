@@ -12,10 +12,9 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
   - **修改 Rust 代码或 Cargo 配置**：必须执行 `cargo test --manifest-path src-tauri/Cargo.toml`
   - **纯 UI (`ui/`) 或文档修改**：**严禁执行 `cargo test`**（避免触发 Debug 依赖的全量重复编译）。
 
-## 2. 编译加速与资源限制
+## 2. 编译加速与资源配置
 
 - **全局共享缓存**：执行前必须设置 `$env:CARGO_TARGET_DIR = "$env:USERPROFILE\.cargo\target_shared\blurt"`，实现跨 Worktree 依赖秒级复用。
-- **并发线程限制**：所有 cargo 构建命令必须带 `-j 4`，防止打满 CPU/内存。
 - **路径与 Profile**：必须在 `src-tauri` 目录下执行；日常部署使用 `--profile release-fast`。严禁执行 `cargo clean`。
 
 ## 3. 发布部署与进程管理
@@ -26,7 +25,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 $env:CARGO_TARGET_DIR = "$env:USERPROFILE\.cargo\target_shared\blurt"
 Set-Location src-tauri
-cargo build --profile release-fast -j 4
+cargo build --profile release-fast
 
 # 关闭旧进程并预留 2 秒释放 WebView2 与单实例命名管道
 Get-Process Blurt, blurt -ErrorAction SilentlyContinue | Stop-Process -Force
