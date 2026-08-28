@@ -178,14 +178,97 @@ const API_PILL_TEXT = {
   failed: '不可用',
 };
 
+function extractBriefReason(detail) {
+  if (!detail || typeof detail !== 'string') return '';
+  if (detail.includes('均可用') || detail.includes('正在检查')) return '';
+  if (detail === '请先保存 API Key' || detail.includes('保存 API Key') || detail.includes('配置 API Key')) {
+    return '未配置 API Key';
+  }
+
+  const parts = detail.split(/[；;]/).map(s => s.trim()).filter(Boolean);
+  const reasons = parts.map(part => {
+    if (/401|Unauthorized|鉴权失败|认证失败/i.test(part)) return 'API Key 无效';
+    if (/403|Forbidden/i.test(part)) return '服务无权限';
+    if (/429|TooManyRequests|限流|配额|额度|欠费|arrears/i.test(part)) return '接口额度耗尽或限流';
+    if (/超时|timeout|timedout/i.test(part)) return '网络连接超时';
+    if (/关闭了连接|closed/i.test(part)) return '连接被断开';
+    if (/连接.*失败|无法连接|ConnectionRefused|Failed to connect/i.test(part)) return '豆包连接失败';
+    if (/豆包识别失败/i.test(part)) {
+      const codeMatch = part.match(/（(\d+)）|\((\d+)\)/);
+      const code = codeMatch ? (codeMatch[1] || codeMatch[2]) : '';
+      return code ? `识别失败(${code})` : '豆包识别失败';
+    }
+    if (/读取 API Key 失败/i.test(part)) return 'API Key 读取失败';
+    if (/豆包/i.test(part)) return '豆包服务异常';
+
+    if (/未找到.*麦克风|找不到.*麦克风|无可用麦克风/i.test(part)) return '未找到麦克风';
+    if (/麦克风.*占用|device in use/i.test(part)) return '麦克风被占用';
+    if (/麦克风.*权限|麦克风.*拒绝|permission denied/i.test(part)) return '麦克风无权限';
+    if (/无法打开麦克风|无法启动录音|麦克风配置/i.test(part)) return '麦克风启动失败';
+    if (/麦克风/i.test(part)) return '麦克风异常';
+
+    if (/未找到可写入的活动窗口|未找到活动窗口/i.test(part)) return '未找到活动窗口';
+    if (/SendInput 被系统拒绝|管理员权限/i.test(part)) return '目标窗口权限过高';
+    if (/剪贴板/i.test(part)) return '剪贴板访问失败';
+    if (/文本写入/i.test(part)) return '文本写入失败';
+
+    let clean = part
+      .replace(/^豆包服务（网络或 API Key）：/, '')
+      .replace(/^豆包服务：/, '')
+      .replace(/^麦克风：/, '')
+      .replace(/^文本写入：/, '')
+      .replace(/^无法启动可用性检查：/, '')
+      .replace(/^读取 API Key 失败：/, '')
+      .trim();
+    clean = clean.split(/[:：\n]/)[0].trim();
+    if (clean.length > 14) clean = clean.slice(0, 14) + '…';
+    return clean;
+  }).filter(Boolean);
+
+  const unique = [...new Set(reasons)];
+  if (!unique.length) return '';
+  return unique.join('、');
+}
+
 function renderEngine(st) {
   const dotCls = { ready: 'ok', loading: 'loading', missing: 'missing' }[st.state] || 'err';
-  $('pillDot').className = 'dot ' + dotCls;
-  $('pillText').textContent = API_PILL_TEXT[st.state] || API_PILL_TEXT.failed;
+  const pill = $('enginePill') || document.querySelector('.engine-pill');
+  const dot = $('pillDot');
+  const text = $('pillText');
+  const reasonEl = $('pillReason');
+
+  if (dot) dot.className = 'dot ' + dotCls;
+  if (text) text.textContent = API_PILL_TEXT[st.state] || API_PILL_TEXT.failed;
+
+  if (pill) {
+    pill.classList.remove('is-error', 'is-missing');
+    if (st.state === 'failed') {
+      pill.classList.add('is-error');
+    } else if (st.state === 'missing') {
+      pill.classList.add('is-missing');
+    }
+  }
+
+  const briefReason = (st.state === 'failed' || st.state === 'missing')
+    ? extractBriefReason(st.detail)
+    : '';
+
+  if (reasonEl) {
+    if (briefReason) {
+      reasonEl.textContent = briefReason;
+      reasonEl.hidden = false;
+    } else {
+      reasonEl.textContent = '';
+      reasonEl.hidden = true;
+    }
+  }
+
   const detail = st.detail || API_PILL_TEXT[st.state] || API_PILL_TEXT.failed;
-  const pill = document.querySelector('.engine-pill');
-  pill.title = detail;
-  pill.setAttribute('aria-label', detail);
+  const fullLabel = briefReason ? `${API_PILL_TEXT[st.state] || '不可用'}（${detail}）` : detail;
+  if (pill) {
+    pill.title = detail;
+    pill.setAttribute('aria-label', fullLabel);
+  }
 }
 
 async function refreshEngineStatus() {
@@ -619,6 +702,21 @@ function bind() {
   });
 
   $('btnOpenLogs').addEventListener('click', () => invoke('open_log_dir'));
+
+  $('enginePill').addEventListener('click', () => {
+    if (apiKeyState && !apiKeyState.configured) {
+      setApiEditorOpen(true);
+      $('doubaoApiKey')?.focus();
+    } else {
+      const detail = $('enginePill')?.title || '';
+      if (/API Key|401|403|鉴权|凭据|密钥/i.test(detail)) {
+        setApiEditorOpen(true);
+        $('doubaoApiKey')?.focus();
+      } else if (/麦克风|mic|audio/i.test(detail)) {
+        $('micDevice')?.focus();
+      }
+    }
+  });
 }
 
 /* ---------- 启动 ---------- */
