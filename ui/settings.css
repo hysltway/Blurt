@@ -115,6 +115,7 @@ textarea {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 520px;
   padding: 2px 8px;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -122,6 +123,47 @@ textarea {
   color: var(--ink-soft);
   font-size: 11px;
   white-space: nowrap;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.engine-pill.is-error {
+  border-color: rgba(225, 29, 72, 0.28);
+  background: var(--danger-soft);
+  color: #9F1239;
+  cursor: pointer;
+}
+
+.engine-pill.is-missing {
+  border-color: var(--line-strong);
+  background: var(--canvas);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.pill-reason {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.pill-reason::before {
+  content: "·";
+  margin-right: 5px;
+  opacity: 0.6;
+  flex: none;
+}
+
+.engine-pill.is-error .pill-reason {
+  color: var(--danger);
+}
+
+.engine-pill.is-missing .pill-reason {
+  color: var(--ink-soft);
 }
 
 .header-action {
