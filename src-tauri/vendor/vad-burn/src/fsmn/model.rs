@@ -34,10 +34,9 @@ pub struct FsmnVadStream {
     options: VadOptions,
     caches: Vec<Tensor<Backend, 2>>,
     post_processor: FsmnVadStreamingPostProcessor,
-    samples: Vec<f32>,
     pending_samples: Vec<f32>,
     pending_frame_scores: Vec<Vec<f32>>,
-    frame_scores: Vec<Vec<f32>>,
+    latest_frame_scores: Vec<Vec<f32>>,
 }
 
 impl FsmnVadModel {
@@ -81,10 +80,9 @@ impl FsmnVadModel {
             caches: self.weights.zero_caches(),
             post_processor: FsmnVadStreamingPostProcessor::new(options.clone()),
             options,
-            samples: Vec::new(),
             pending_samples: Vec::new(),
             pending_frame_scores: Vec::new(),
-            frame_scores: Vec::new(),
+            latest_frame_scores: Vec::new(),
         }
     }
 
@@ -210,10 +208,10 @@ impl FsmnVadStream {
     }
 
     fn next_frame_scores(&mut self, samples: &[f32], sample_rate: u32) -> Result<Vec<Vec<f32>>> {
-        let waveform = Waveform::new(samples.to_vec(), sample_rate);
-        validate_waveform(&waveform)?;
+        if sample_rate != SAMPLE_RATE {
+            bail!("FSMN VAD expects 16kHz mono audio, got sample_rate={sample_rate}");
+        }
 
-        self.samples.extend_from_slice(samples);
         let feats = self.feature_stream.push_normalized_f32(samples)?;
         let [frames, feat_dim] = feats.dims();
         if feat_dim != FEAT_DIM {
@@ -225,7 +223,7 @@ impl FsmnVadStream {
         } else {
             Vec::new()
         };
-        self.frame_scores.extend(frame_scores.clone());
+        self.latest_frame_scores = frame_scores.clone();
         Ok(frame_scores)
     }
 
@@ -241,12 +239,16 @@ impl FsmnVadStream {
         } else {
             Vec::new()
         };
-        self.frame_scores.extend(frame_scores.clone());
+        self.latest_frame_scores = frame_scores.clone();
         Ok(frame_scores)
     }
 
+    pub fn latest_frame_scores(&self) -> &[Vec<f32>] {
+        &self.latest_frame_scores
+    }
+
     pub fn frame_scores(&self) -> &[Vec<f32>] {
-        &self.frame_scores
+        &self.latest_frame_scores
     }
 
     pub fn options(&self) -> &VadOptions {
@@ -257,10 +259,9 @@ impl FsmnVadStream {
         self.caches = self.weights.zero_caches();
         self.feature_stream.reset();
         self.post_processor = FsmnVadStreamingPostProcessor::new(self.options.clone());
-        self.samples.clear();
         self.pending_samples.clear();
         self.pending_frame_scores.clear();
-        self.frame_scores.clear();
+        self.latest_frame_scores.clear();
     }
 }
 

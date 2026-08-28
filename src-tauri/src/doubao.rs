@@ -128,9 +128,9 @@ fn run_stream(api_key: &str, hotwords: &str, rx: Receiver<Command>) -> Result<St
             Ok(Command::Audio(samples)) => {
                 pcm.extend(samples.into_iter().map(float_to_i16));
                 while pcm.len() >= AUDIO_CHUNK_SAMPLES {
-                    let rest = pcm.split_off(AUDIO_CHUNK_SAMPLES);
-                    let chunk = std::mem::replace(&mut pcm, rest);
-                    socket.send(Message::Binary(audio_request(&chunk, false)?.into()))?;
+                    let frame = audio_request(&pcm[..AUDIO_CHUNK_SAMPLES], false)?;
+                    socket.send(Message::Binary(frame.into()))?;
+                    pcm.drain(..AUDIO_CHUNK_SAMPLES);
                 }
             }
             Ok(Command::Finish) => {
@@ -225,7 +225,7 @@ fn encode_frame(header: [u8; 4], payload: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn gzip(payload: &[u8]) -> Result<Vec<u8>> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut encoder = GzEncoder::new(Vec::with_capacity(payload.len()), Compression::fast());
     encoder.write_all(payload)?;
     Ok(encoder.finish()?)
 }
