@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 use tauri::{AppHandle, Manager};
 
 static CHORD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
@@ -15,6 +16,10 @@ const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
 const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_SYSKEYUP: u32 = 0x0105;
+
+/// 快捷键识别容错时间窗口（毫秒）。
+/// 即使按键没有物理重叠（例如手指交替敲击过快），只要在阈值时间内先后按下，即可判定为一次有效触发。
+const CHORD_THRESHOLD_MS: u128 = 250;
 
 const VK_SHIFT: u32 = 0x10;
 const VK_CONTROL: u32 = 0x11;
@@ -315,18 +320,102 @@ enum ChordEvent {
     Broken,
 }
 
+/// 记录快捷键按键历史时间戳，用于时间窗口容错识别。
+#[derive(Clone, Copy, Debug, Default)]
+struct KeyPressHistory {
+    ctrl: Option<Instant>,
+    alt: Option<Instant>,
+    shift: Option<Instant>,
+    win: Option<Instant>,
+    primary: Option<(u32, Instant)>,
+}
+
+impl KeyPressHistory {
+    fn record(&mut self, vk: u32, selected: &Shortcut, now: Instant) {
+        match vk {
+            0x10 | 0xA0 | 0xA1 => self.shift = Some(now),
+            0x11 | 0xA2 | 0xA3 => self.ctrl = Some(now),
+            0x12 | 0xA4 | 0xA5 => self.alt = Some(now),
+            VK_LWIN | VK_RWIN => self.win = Some(now),
+            _ if selected.key == Some(vk) => self.primary = Some((vk, now)),
+            _ => {
+                // 按下了不属于快捷键的按键（如打字、复制粘贴），清空按键历史防止误触发
+                self.clear();
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_triggered(&self, mods: &ChordMods, selected: &Shortcut, now: Instant) -> bool {
+        let within = |t: Option<Instant>| {
+            t.map_or(false, |ts| {
+                now.saturating_duration_since(ts).as_millis() <= CHORD_THRESHOLD_MS
+            })
+        };
+
+        if selected.ctrl {
+            if !mods.ctrl() && !within(self.ctrl) {
+                return false;
+            }
+        } else if mods.ctrl() {
+            return false;
+        }
+
+        if selected.alt {
+            if !mods.alt() && !within(self.alt) {
+                return false;
+            }
+        } else if mods.alt() {
+            return false;
+        }
+
+        if selected.shift {
+            if !mods.shift() && !within(self.shift) {
+                return false;
+            }
+        } else if mods.shift() {
+            return false;
+        }
+
+        if selected.win {
+            if !mods.win() && !within(self.win) {
+                return false;
+            }
+        } else if mods.win() {
+            return false;
+        }
+
+        if let Some(target_key) = selected.key {
+            let key_recent = self.primary.map_or(false, |(k, ts)| {
+                k == target_key
+                    && now.saturating_duration_since(ts).as_millis() <= CHORD_THRESHOLD_MS
+            });
+            if !key_recent {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
 /// Detects the configured shortcut from raw key events.
 #[derive(Default)]
 struct ChordState {
     mods: ChordMods,
     phase: ChordPhase,
     active_shortcut: Option<Shortcut>,
+    history: KeyPressHistory,
 }
 
 impl ChordState {
     fn reset(&mut self) {
         self.phase = ChordPhase::Idle;
         self.active_shortcut = None;
+        self.history.clear();
     }
 
     fn clear_for_capture(&mut self) {
@@ -337,6 +426,7 @@ impl ChordState {
     fn activate(&mut self, shortcut: Shortcut) {
         self.phase = ChordPhase::Active;
         self.active_shortcut = Some(shortcut);
+        self.history.clear();
     }
 
     fn handle(&mut self, message: u32, vk: u32, selected: Shortcut) -> Option<ChordEvent> {
@@ -350,10 +440,15 @@ impl ChordState {
             self.mods.sync_physical();
         }
 
+        let now = Instant::now();
+        if pressed {
+            self.history.record(vk, &selected, now);
+        }
+
         if is_mod {
             return match self.phase {
                 ChordPhase::Idle => {
-                    if selected.key.is_none() && selected.matches_modifiers(&self.mods) {
+                    if pressed && self.history.is_triggered(&self.mods, &selected, now) {
                         self.activate(selected);
                         Some(ChordEvent::Pressed)
                     } else {
@@ -366,6 +461,7 @@ impl ChordState {
                         None
                     } else if pressed {
                         self.phase = ChordPhase::Contaminated;
+                        self.history.clear();
                         Some(ChordEvent::Broken)
                     } else {
                         self.reset();
@@ -373,7 +469,7 @@ impl ChordState {
                     }
                 }
                 ChordPhase::Contaminated => {
-                    if selected.key.is_none() && selected.matches_modifiers(&self.mods) {
+                    if pressed && self.history.is_triggered(&self.mods, &selected, now) {
                         self.activate(selected);
                         Some(ChordEvent::Pressed)
                     } else if self.mods.clear() || !pressed {
@@ -388,7 +484,7 @@ impl ChordState {
 
         match self.phase {
             ChordPhase::Idle => {
-                if pressed && selected.key == Some(vk) && selected.matches_modifiers(&self.mods) {
+                if pressed && self.history.is_triggered(&self.mods, &selected, now) {
                     self.activate(selected);
                     Some(ChordEvent::Pressed)
                 } else {
@@ -406,13 +502,14 @@ impl ChordState {
                     }
                 } else if pressed {
                     self.phase = ChordPhase::Contaminated;
+                    self.history.clear();
                     Some(ChordEvent::Broken)
                 } else {
                     None
                 }
             }
             ChordPhase::Contaminated => {
-                if pressed && selected.key == Some(vk) && selected.matches_modifiers(&self.mods) {
+                if pressed && self.history.is_triggered(&self.mods, &selected, now) {
                     self.activate(selected);
                     Some(ChordEvent::Pressed)
                 } else if self.mods.clear() {
@@ -624,6 +721,104 @@ mod tests {
         assert_eq!(
             state.handle(WM_KEYUP, KEY_K, shortcut),
             Some(ChordEvent::Released)
+        );
+    }
+
+    #[test]
+    fn rapid_pure_modifiers_without_overlap_triggers_pressed() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 模拟用户极快地先按 Ctrl 并抬起，随后按 Alt（无任何物理重叠）
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, LCTRL, shortcut), None);
+        assert_eq!(
+            state.handle(WM_SYSKEYDOWN, LALT, shortcut),
+            Some(ChordEvent::Pressed),
+            "时间窗口内快速交替按下 Ctrl 和 Alt 应判定为有效触发"
+        );
+        assert_eq!(
+            state.handle(WM_SYSKEYUP, LALT, shortcut),
+            Some(ChordEvent::Released)
+        );
+    }
+
+    #[test]
+    fn rapid_reverse_modifiers_without_overlap_triggers_pressed() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 模拟反向顺序：先按 Alt 并抬起，随后按 Ctrl（无物理重叠）
+        assert_eq!(state.handle(WM_SYSKEYDOWN, LALT, shortcut), None);
+        assert_eq!(state.handle(WM_SYSKEYUP, LALT, shortcut), None);
+        assert_eq!(
+            state.handle(WM_KEYDOWN, LCTRL, shortcut),
+            Some(ChordEvent::Pressed),
+            "反向顺序 Alt -> Ctrl 在时间窗口内也应正常触发"
+        );
+        assert_eq!(
+            state.handle(WM_KEYUP, LCTRL, shortcut),
+            Some(ChordEvent::Released)
+        );
+    }
+
+    #[test]
+    fn rapid_primary_key_without_overlap_triggers_pressed() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Shift+K");
+
+        // 模拟用户快速按下 Ctrl 抬起、Shift 抬起，随后按下主键 K
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYDOWN, LSHIFT, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, LSHIFT, shortcut), None);
+        assert_eq!(
+            state.handle(WM_KEYDOWN, KEY_K, shortcut),
+            Some(ChordEvent::Pressed),
+            "修饰键和主键在时间窗口内连续按下应成功触发"
+        );
+        assert_eq!(
+            state.handle(WM_KEYUP, KEY_K, shortcut),
+            Some(ChordEvent::Released)
+        );
+    }
+
+    #[test]
+    fn typing_or_extra_key_resets_history_and_prevents_misfire() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 模拟用户在打字/快捷键如 Ctrl+A
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYDOWN, KEY_A, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, KEY_A, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, LCTRL, shortcut), None);
+
+        // 随后用户单独按下 Alt，因为之前输入了无关杂键 A，历史已被清空，不应触发 Ctrl+Alt
+        assert_eq!(
+            state.handle(WM_SYSKEYDOWN, LALT, shortcut),
+            None,
+            "按压无关键后应清空历史，避免后续单按 Alt 误触发"
+        );
+    }
+
+    #[test]
+    fn delayed_press_beyond_threshold_does_not_trigger() {
+        let mut state = ChordState::default();
+        let shortcut = shortcut("Ctrl+Alt");
+
+        // 用户按下 Ctrl 并松开
+        assert_eq!(state.handle(WM_KEYDOWN, LCTRL, shortcut), None);
+        assert_eq!(state.handle(WM_KEYUP, LCTRL, shortcut), None);
+
+        // 等待超过 250ms 容错时间窗口
+        std::thread::sleep(std::time::Duration::from_millis(270));
+
+        // 超过阈值后按下 Alt，不应触发
+        assert_eq!(
+            state.handle(WM_SYSKEYDOWN, LALT, shortcut),
+            None,
+            "超过 250ms 容错时间窗口后按键不应触发"
         );
     }
 }
