@@ -7,8 +7,8 @@ const { listen } = window.__TAURI__.event;
 let cfg = null;
 let usageStats = null;
 let saveTimer = null;
-let apiKeyState = { configured: false, error: null };
-let apiEditorOpen = false;
+let apiKeyState = { configured: false, active_name: null, count: 0, error: null };
+let isApiKeyModalOpen = false;
 let capturingHotkey = false;
 let pendingHotkey = null;
 let resizeQueued = false;
@@ -17,6 +17,16 @@ let lastRequestedSize = null;
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const INJECT_MODE_INDEX = { auto: 0, type: 1, paste: 2 };
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 /* ---------- 提示 ---------- */
 let toastTimer = null;
@@ -280,25 +290,161 @@ async function refreshEngineStatus() {
   }
 }
 
-function updateApiEditor(open) {
-  apiEditorOpen = open;
-  $('credentialEditor').hidden = !open;
-  $('btnEditApiKey').setAttribute('aria-expanded', String(open));
-  $('btnEditApiKey').textContent = open
-    ? '收起'
-    : (apiKeyState.configured ? '更换密钥' : '配置密钥');
-}
-
-function setApiEditorOpen(open) {
-  updateApiEditor(open);
-  scheduleSettingsResize();
-}
-
 function renderApiKeyState() {
-  const keyInput = $('doubaoApiKey');
-  keyInput.placeholder = apiKeyState.configured ? '输入新 API Key' : '输入豆包 API Key';
-  $('btnRemoveApiKey').style.display = apiKeyState.configured ? '' : 'none';
-  updateApiEditor(apiEditorOpen);
+  const badge = $('activeKeyBadge');
+  const btn = $('btnOpenApiKeyModal');
+  if (apiKeyState && apiKeyState.configured) {
+    badge.textContent = apiKeyState.active_name || '已配置';
+    badge.classList.add('is-configured');
+    badge.title = `当前生效密钥：${apiKeyState.active_name || '已配置'}`;
+    btn.textContent = '管理密钥';
+  } else {
+    badge.textContent = '未配置';
+    badge.classList.remove('is-configured');
+    badge.title = '未配置 API Key';
+    btn.textContent = '配置密钥';
+  }
+}
+
+function setAddKeySectionOpen(open) {
+  const section = $('addKeySection');
+  const btn = $('btnToggleAddKey');
+  if (section) section.hidden = !open;
+  if (btn) btn.title = open ? '收起添加' : '添加新密钥';
+  if (open) $('newKeyName')?.focus();
+}
+
+function openApiKeyModal() {
+  const modal = $('apiKeyModal');
+  modal.hidden = false;
+  modal.setAttribute('aria-hidden', 'false');
+  isApiKeyModalOpen = true;
+  setAddKeySectionOpen(false);
+  loadAndRenderApiKeyList();
+}
+
+function closeApiKeyModal() {
+  const modal = $('apiKeyModal');
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+  isApiKeyModalOpen = false;
+  setAddKeySectionOpen(false);
+  $('newKeyName').value = '';
+  $('newKeyValue').value = '';
+}
+
+async function loadAndRenderApiKeyList() {
+  const listEl = $('apiKeyList');
+  try {
+    const keys = await invoke('list_doubao_api_keys');
+    if (!keys || keys.length === 0) {
+      listEl.innerHTML = '<div class="api-key-empty"><span>暂无已保存的 API Key</span></div>';
+      return;
+    }
+    listEl.replaceChildren();
+    for (const item of keys) {
+      const row = document.createElement('div');
+      row.className = 'api-key-item';
+      row.setAttribute('role', 'listitem');
+
+      const left = document.createElement('div');
+      left.className = 'key-item-left';
+
+      const dot = document.createElement('span');
+      dot.className = 'key-status-dot' + (item.is_active ? ' is-active' : '');
+      dot.title = item.is_active ? '正在使用' : '';
+      left.appendChild(dot);
+
+      const name = document.createElement('span');
+      name.className = 'key-item-name';
+      name.textContent = item.name;
+      name.title = item.name;
+      left.appendChild(name);
+
+      const code = document.createElement('code');
+      code.className = 'key-masked';
+      code.textContent = item.masked_key;
+      left.appendChild(code);
+
+      if (item.created_at) {
+        const date = document.createElement('span');
+        date.className = 'key-date';
+        date.textContent = item.created_at;
+        left.appendChild(date);
+      }
+      row.appendChild(left);
+
+      const right = document.createElement('div');
+      right.className = 'key-item-right';
+
+      if (!item.is_active) {
+        const btnSelect = document.createElement('button');
+        btnSelect.className = 'btn btn-sm';
+        btnSelect.type = 'button';
+        btnSelect.textContent = '使用';
+        btnSelect.addEventListener('click', async () => {
+          try {
+            await invoke('select_doubao_api_key', { id: item.id });
+            toast(`已切换至 "${item.name}"`);
+            await refreshApiKeyState();
+            await loadAndRenderApiKeyList();
+            renderEngine(await invoke('engine_status'));
+          } catch (e) {
+            toast(String(e));
+          }
+        });
+        right.appendChild(btnSelect);
+      }
+
+      const btnDelete = document.createElement('button');
+      btnDelete.className = 'btn-icon btn-delete-key';
+      btnDelete.type = 'button';
+      btnDelete.setAttribute('aria-label', `删除密钥 "${item.name}"`);
+      btnDelete.title = `删除密钥 "${item.name}"`;
+      btnDelete.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+      btnDelete.addEventListener('click', async () => {
+        try {
+          await invoke('delete_doubao_api_key', { id: item.id });
+          toast(`已删除密钥 "${item.name}"`);
+          await refreshApiKeyState();
+          await loadAndRenderApiKeyList();
+          renderEngine(await invoke('engine_status'));
+        } catch (e) {
+          toast(String(e));
+        }
+      });
+      right.appendChild(btnDelete);
+
+      row.appendChild(right);
+      listEl.appendChild(row);
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="api-key-empty"><span>读取列表失败：${escapeHtml(String(e))}</span></div>`;
+  }
+}
+
+async function handleAddApiKey() {
+  const nameInput = $('newKeyName');
+  const keyInput = $('newKeyValue');
+  const name = nameInput.value.trim();
+  const apiKey = keyInput.value.trim();
+  if (!apiKey) {
+    toast('请输入 API Key');
+    keyInput.focus();
+    return;
+  }
+  try {
+    await invoke('add_doubao_api_key', { name, apiKey });
+    nameInput.value = '';
+    keyInput.value = '';
+    setAddKeySectionOpen(false);
+    toast('已保存并启用该密钥');
+    await refreshApiKeyState();
+    await loadAndRenderApiKeyList();
+    renderEngine(await invoke('engine_status'));
+  } catch (e) {
+    toast(String(e));
+  }
 }
 
 /* ---------- 使用统计 ---------- */
@@ -609,13 +755,19 @@ async function loadMics() {
 function bind() {
   $('btnCaptureHotkey').addEventListener('click', beginHotkeyCapture);
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      if (capturingHotkey) {
+        endHotkeyCapture();
+        return;
+      }
+      if (isApiKeyModalOpen) {
+        closeApiKeyModal();
+        return;
+      }
+    }
     if (!capturingHotkey) return;
     event.preventDefault();
     event.stopPropagation();
-    if (event.key === 'Escape') {
-      endHotkeyCapture();
-      return;
-    }
     const hotkey = capturedHotkey(event);
     if (!hotkey) return;
     pendingHotkey = hotkey.value;
@@ -664,55 +816,44 @@ function bind() {
     save();
   });
 
-  $('btnEditApiKey').addEventListener('click', async () => {
-    const opening = !apiEditorOpen;
-    setApiEditorOpen(opening);
-    if (opening) $('doubaoApiKey').focus();
+  // API 密钥二级弹窗事件
+  $('btnOpenApiKeyModal').addEventListener('click', openApiKeyModal);
+  $('btnCloseApiKeyModal').addEventListener('click', closeApiKeyModal);
+  $('btnToggleAddKey').addEventListener('click', () => {
+    setAddKeySectionOpen($('addKeySection').hidden);
+  });
+  $('btnCancelAddKey').addEventListener('click', () => {
+    setAddKeySectionOpen(false);
+  });
+  $('apiKeyModal').addEventListener('click', event => {
+    if (event.target === $('apiKeyModal')) {
+      closeApiKeyModal();
+    }
   });
 
-  const saveApiKey = async () => {
-    const input = $('doubaoApiKey');
-    const apiKey = input.value.trim();
-    if (!apiKey) {
-      toast('请输入 API Key');
-      return;
+  $('btnAddApiKey').addEventListener('click', handleAddApiKey);
+  $('newKeyName').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      $('newKeyValue').focus();
     }
-    try {
-      await invoke('set_doubao_api_key', { apiKey });
-      input.value = '';
-      apiEditorOpen = false;
-      await refreshApiKeyState();
-      setApiEditorOpen(false);
-      renderEngine(await invoke('engine_status'));
-      toast('API Key 已安全保存');
-    } catch (e) {
-      toast(String(e));
-    }
-  };
-  $('btnSaveApiKey').addEventListener('click', saveApiKey);
-  $('doubaoApiKey').addEventListener('keydown', event => {
-    if (event.key === 'Enter') saveApiKey();
   });
-  $('btnRemoveApiKey').addEventListener('click', async () => {
-    await invoke('set_doubao_api_key', { apiKey: '' });
-    apiEditorOpen = true;
-    await refreshApiKeyState();
-    setApiEditorOpen(true);
-    renderEngine(await invoke('engine_status'));
-    toast('API Key 已移除');
+  $('newKeyValue').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleAddApiKey();
+    }
   });
 
   $('btnOpenLogs').addEventListener('click', () => invoke('open_log_dir'));
 
   $('enginePill').addEventListener('click', () => {
     if (apiKeyState && !apiKeyState.configured) {
-      setApiEditorOpen(true);
-      $('doubaoApiKey')?.focus();
+      openApiKeyModal();
     } else {
       const detail = $('enginePill')?.title || '';
       if (/API Key|401|403|鉴权|凭据|密钥/i.test(detail)) {
-        setApiEditorOpen(true);
-        $('doubaoApiKey')?.focus();
+        openApiKeyModal();
       } else if (/麦克风|mic|audio/i.test(detail)) {
         $('micDevice')?.focus();
       }
@@ -727,14 +868,15 @@ function bind() {
     invoke('doubao_api_key_status'),
     invoke('get_usage_stats'),
   ]);
-  apiEditorOpen = !apiKeyState.configured;
   render();
   renderUsageStats(usageStats);
   bind();
   loadMics();
-  setApiEditorOpen(apiEditorOpen);
   installSettingsResize();
   renderEngine(await invoke('engine_status'));
+  if (!apiKeyState.configured) {
+    openApiKeyModal();
+  }
   await listen('engine:status', event => renderEngine(event.payload));
   await listen('usage:updated', event => renderUsageStats(event.payload));
   void refreshEngineStatus();

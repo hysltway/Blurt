@@ -80,16 +80,11 @@
         <textarea id="hotwords" rows="2" placeholder="Claude, Tauri, Rust, cloud=>claude" spellcheck="false"></textarea>
       </div>
       <div class="setting-row">
-        <div class="field-label">豆包服务</div>
-        <div class="setting-control">
-          <button class="btn" id="btnEditApiKey" type="button" aria-expanded="false" aria-controls="credentialEditor">更换密钥</button>
+        <div class="field-label">API 密钥</div>
+        <div class="setting-control api-setting-control">
+          <span class="active-key-badge" id="activeKeyBadge" title="当前使用的 API Key">未配置</span>
+          <button class="btn" id="btnOpenApiKeyModal" type="button">管理密钥</button>
         </div>
-      </div>
-      <div class="credential-editor" id="credentialEditor" hidden>
-        <label for="doubaoApiKey">API Key</label>
-        <input id="doubaoApiKey" type="password" autocomplete="off" placeholder="输入豆包 API Key" />
-        <button class="btn primary" id="btnSaveApiKey" type="button">保存</button>
-        <button class="btn" id="btnRemoveApiKey" type="button">移除</button>
       </div>
     </div>
   </section>
@@ -180,6 +175,58 @@
     </div>
   </section>
 </main>
+
+<!-- API 密钥管理二级弹窗 (In-page Modal) -->
+<div class="modal-backdrop" id="apiKeyModal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="apiKeyModalTitle">
+  <div class="modal-card" role="document">
+    <header class="modal-header">
+      <h3 id="apiKeyModalTitle">API 密钥</h3>
+      <button class="btn-icon" id="btnCloseApiKeyModal" type="button" aria-label="关闭弹窗">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+      <!-- 密钥列表 -->
+      <section class="modal-section key-list-section">
+        <div class="api-key-list" id="apiKeyList" role="list">
+          <!-- 动态渲染密钥项 -->
+        </div>
+      </section>
+
+      <!-- 添加密钥表单（点击右下方加号展开） -->
+      <section class="modal-section add-key-section" id="addKeySection" hidden>
+        <div class="key-form-grid">
+          <div class="form-field">
+            <label for="newKeyName">名称</label>
+            <input id="newKeyName" type="text" placeholder="例如：默认、工作、测试" maxlength="24" />
+          </div>
+          <div class="form-field">
+            <label for="newKeyValue">密钥</label>
+            <input id="newKeyValue" type="password" placeholder="输入 API Key" autocomplete="off" />
+          </div>
+          <div class="form-action-row">
+            <button class="btn btn-sm" id="btnCancelAddKey" type="button">取消</button>
+            <button class="btn btn-sm primary" id="btnAddApiKey" type="button">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右下方添加操作 -->
+      <div class="modal-bottom-actions">
+        <button class="btn-icon btn-add-key" id="btnToggleAddKey" type="button" aria-label="添加密钥" title="添加新密钥">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="settings.js"></script>
