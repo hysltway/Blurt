@@ -83,7 +83,8 @@ function save(immediate = false) {
 }
 
 function fmtAutoStop(v) {
-  return v > 0 ? v + ' 秒' : '关闭';
+  const num = Number(v) || 0;
+  return num > 0 ? `${parseFloat(num.toFixed(2))} 秒` : '关闭';
 }
 
 function renderHotkey(hotkey) {
