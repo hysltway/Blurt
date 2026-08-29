@@ -50,10 +50,51 @@ pub fn set_hotkey_capture(state: State<'_, AppState>, capturing: bool) {
 
 #[tauri::command]
 pub fn doubao_api_key_status() -> serde_json::Value {
-    match config::load_doubao_api_key() {
-        Ok(key) => serde_json::json!({ "configured": key.is_some(), "error": null }),
-        Err(e) => serde_json::json!({ "configured": false, "error": format!("{e:#}") }),
+    match config::load_doubao_api_keys() {
+        Ok(keys) => {
+            let active = keys.iter().find(|k| k.is_active).or_else(|| keys.first());
+            let configured = active.is_some();
+            let active_name = active.map(|k| k.name.clone());
+            serde_json::json!({
+                "configured": configured,
+                "active_name": active_name,
+                "count": keys.len(),
+                "error": null
+            })
+        }
+        Err(e) => serde_json::json!({
+            "configured": false,
+            "active_name": null,
+            "count": 0,
+            "error": format!("{e:#}")
+        }),
     }
+}
+
+#[tauri::command]
+pub fn list_doubao_api_keys() -> Result<Vec<config::ApiKeyDto>, String> {
+    config::list_doubao_api_key_dtos().map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn add_doubao_api_key(app: AppHandle, name: String, api_key: String) -> Result<(), String> {
+    config::add_doubao_api_key(&name, &api_key).map_err(|e| format!("添加 API Key 失败：{e:#}"))?;
+    crate::app::refresh_api_status(&app, false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn select_doubao_api_key(app: AppHandle, id: String) -> Result<(), String> {
+    config::select_doubao_api_key(&id).map_err(|e| format!("切换 API Key 失败：{e:#}"))?;
+    crate::app::refresh_api_status(&app, false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_doubao_api_key(app: AppHandle, id: String) -> Result<(), String> {
+    config::delete_doubao_api_key(&id).map_err(|e| format!("删除 API Key 失败：{e:#}"))?;
+    crate::app::refresh_api_status(&app, false);
+    Ok(())
 }
 
 #[tauri::command]
