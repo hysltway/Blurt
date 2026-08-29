@@ -9,5 +9,11 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={icon}");
     }
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:rustc-link-lib=msvcrt");
+        println!("cargo:rustc-link-lib=ucrt");
+        println!("cargo:rustc-link-lib=vcruntime");
+    }
     tauri_build::build()
 }

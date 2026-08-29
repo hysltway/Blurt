@@ -1,93 +1,134 @@
-//! Streaming FSMN voice endpoint detection for toggle-mode recordings.
+//! Streaming Silero VAD voice endpoint detection for toggle-mode recordings.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+use ort::session::Session;
+use ort::value::Tensor;
 use parking_lot::Mutex;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use vad_burn::{FsmnVadModel, FsmnVadStream, VadOptions};
 
 use crate::audio;
 
-const FSMN_MODEL: &[u8] = include_bytes!("../fsmn_vad_model.pt");
-const FSMN_CMVN: &[u8] = include_bytes!("../fsmn_vad_am.mvn");
-const FSMN_LICENSE: &str = include_str!("../FSMN_VAD_LICENSE.txt");
-const SPEECH_NOISE_THRESHOLD: f32 = 0.6;
+const SILERO_MODEL: &[u8] = include_bytes!("../silero_vad_ifless.onnx");
+const SPEECH_THRESHOLD: f32 = 0.5;
 const MIN_SPEECH_MS: u64 = 100;
-const FRAME_MS: u32 = 10;
+const CHUNK_SAMPLES: usize = 512; // 32ms @ 16kHz
+const CONTEXT_SAMPLES: usize = 64; // 4ms context
+const STATE_LEN: usize = 2 * 1 * 128; // [2, 1, 128]
 const NO_SPEECH_GRACE_SECS: f32 = 2.0;
 
-static BUNDLED_MODEL: OnceLock<Result<Mutex<FsmnVadModel>, String>> = OnceLock::new();
+static BUNDLED_SESSION: OnceLock<Result<Mutex<Session>, String>> = OnceLock::new();
 
-/// Stateful neural VAD plus Blurt's initial no-speech timeout.
+/// Stateful neural Silero VAD endpoint detector.
 pub struct SpeechEndpoint {
-    stream: FsmnVadStream,
     stop_secs: f32,
+    context: Vec<f32>,
+    state: Vec<f32>,
+    buffer: Vec<f32>,
     accepted_samples: u64,
     speech_run_frames: u32,
+    silence_run_frames: u32,
     heard_speech: bool,
     done: bool,
 }
 
 impl SpeechEndpoint {
     pub fn create(stop_secs: f32) -> Result<Self> {
-        let model = BUNDLED_MODEL.get_or_init(|| {
-            ensure_bundled_model()
-                .and_then(FsmnVadModel::from_pretrained)
+        let session_lock = BUNDLED_SESSION.get_or_init(|| {
+            init_session()
                 .map(Mutex::new)
                 .map_err(|error| format!("{error:#}"))
         });
-        let model = model
+        let _ = session_lock
             .as_ref()
-            .map_err(|error| anyhow!("FSMN-VAD initialization failed: {error}"))?;
-        Ok(Self::from_model(stop_secs, &model.lock()))
-    }
+            .map_err(|error| anyhow!("Silero-VAD initialization failed: {error}"))?;
 
-    fn from_model(stop_secs: f32, model: &FsmnVadModel) -> Self {
-        let options = VadOptions {
-            threshold: SPEECH_NOISE_THRESHOLD,
-            min_speech_ms: MIN_SPEECH_MS,
-            min_silence_ms: (stop_secs * 1000.0).round().max(1.0) as u64,
-            max_segment_ms: 0,
-            pad_ms: 0,
-        };
-        Self {
-            stream: model.new_stream(options),
+        Ok(Self {
             stop_secs,
+            context: vec![0.0; CONTEXT_SAMPLES],
+            state: vec![0.0; STATE_LEN],
+            buffer: Vec::with_capacity(CHUNK_SAMPLES * 2),
             accepted_samples: 0,
             speech_run_frames: 0,
+            silence_run_frames: 0,
             heard_speech: false,
             done: false,
-        }
+        })
     }
 
     /// Accept incremental 16 kHz mono samples. Returns true exactly once after
-    /// FSMN confirms a speech segment ended, or after the initial no-speech timeout.
+    /// Silero confirms a speech segment ended, or after the initial no-speech timeout.
     pub fn update(&mut self, samples: &[f32]) -> Result<bool> {
         if samples.is_empty() || self.done {
             return Ok(false);
         }
 
-        let completed_segments = self
-            .stream
-            .push(samples, audio::TARGET_SR)
-            .context("FSMN-VAD streaming inference failed")?;
         self.accepted_samples = self.accepted_samples.saturating_add(samples.len() as u64);
+        self.buffer.extend_from_slice(samples);
 
-        for scores in self.stream.latest_frame_scores() {
-            if is_speech_frame(scores) {
+        let session_lock = BUNDLED_SESSION
+            .get()
+            .and_then(|res| res.as_ref().ok())
+            .ok_or_else(|| anyhow!("Silero-VAD session is not initialized"))?;
+
+        let mut session = session_lock.lock();
+
+        while self.buffer.len() >= CHUNK_SAMPLES {
+            let mut input_data = Vec::with_capacity(CONTEXT_SAMPLES + CHUNK_SAMPLES);
+            input_data.extend_from_slice(&self.context);
+            input_data.extend_from_slice(&self.buffer[..CHUNK_SAMPLES]);
+
+            // Update context to the last 64 samples of current chunk
+            self.context
+                .copy_from_slice(&self.buffer[CHUNK_SAMPLES - CONTEXT_SAMPLES..CHUNK_SAMPLES]);
+
+            // Construct ONNX tensors
+            let audio_tensor =
+                Tensor::from_array(([1usize, CONTEXT_SAMPLES + CHUNK_SAMPLES], input_data))
+                    .map_err(|e| anyhow!("create audio input tensor: {e}"))?;
+            let sr_tensor = Tensor::from_array(([] as [usize; 0], vec![16000i64]))
+                .map_err(|e| anyhow!("create sr input tensor: {e}"))?;
+            let state_tensor = Tensor::from_array(([2usize, 1usize, 128usize], self.state.clone()))
+                .map_err(|e| anyhow!("create state input tensor: {e}"))?;
+
+            let outputs = session
+                .run(ort::inputs![
+                    "input" => audio_tensor,
+                    "sr" => sr_tensor,
+                    "state" => state_tensor,
+                ])
+                .map_err(|e| anyhow!("Silero-VAD streaming inference failed: {e}"))?;
+
+            let (_prob_shape, prob_data) = outputs["output"]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| anyhow!("extract output probability: {e}"))?;
+            let prob = prob_data.first().copied().unwrap_or(0.0);
+
+            let (_state_shape, next_state_data) = outputs["stateN"]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| anyhow!("extract output state: {e}"))?;
+            self.state.copy_from_slice(next_state_data);
+
+            // Remove processed chunk from buffer
+            self.buffer.drain(..CHUNK_SAMPLES);
+
+            let is_speech = prob >= SPEECH_THRESHOLD;
+            if is_speech {
                 self.speech_run_frames = self.speech_run_frames.saturating_add(1);
-                if self.speech_run_frames * FRAME_MS >= MIN_SPEECH_MS as u32 {
+                self.silence_run_frames = 0;
+                if self.speech_run_frames * 32 >= MIN_SPEECH_MS as u32 {
                     self.heard_speech = true;
                 }
             } else {
                 self.speech_run_frames = 0;
+                if self.heard_speech {
+                    self.silence_run_frames = self.silence_run_frames.saturating_add(1);
+                    let silence_secs = (self.silence_run_frames * 32) as f32 / 1000.0;
+                    if silence_secs >= self.stop_secs {
+                        self.done = true;
+                        return Ok(true);
+                    }
+                }
             }
-        }
-
-        if !completed_segments.is_empty() {
-            self.done = true;
-            return Ok(true);
         }
 
         let elapsed = self.accepted_samples as f32 / audio::TARGET_SR as f32;
@@ -99,38 +140,16 @@ impl SpeechEndpoint {
     }
 }
 
-fn is_speech_frame(scores: &[f32]) -> bool {
-    let silence = scores.first().copied().unwrap_or(1.0).clamp(0.0, 1.0);
-    1.0 - silence >= silence + SPEECH_NOISE_THRESHOLD
-}
-
-fn ensure_bundled_model() -> Result<PathBuf> {
-    #[cfg(not(test))]
-    let root = crate::config::app_dir().join("vad");
-    #[cfg(test)]
-    let root = std::env::temp_dir().join("blurt-tests").join("vad");
-    fs::create_dir_all(&root)
-        .with_context(|| format!("create FSMN-VAD model directory: {}", root.display()))?;
-    write_if_stale(&root.join("model.pt"), FSMN_MODEL)?;
-    write_if_stale(&root.join("am.mvn"), FSMN_CMVN)?;
-
-    let license = root.join("LICENSE.txt");
-    if !license.is_file() {
-        fs::write(&license, FSMN_LICENSE)
-            .with_context(|| format!("write FSMN-VAD license: {}", license.display()))?;
-    }
-    Ok(root)
-}
-
-fn write_if_stale(path: &Path, bytes: &[u8]) -> Result<()> {
-    let current = fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.len() == bytes.len() as u64)
-        .unwrap_or(false);
-    if !current {
-        fs::write(path, bytes)
-            .with_context(|| format!("write bundled model: {}", path.display()))?;
-    }
-    Ok(())
+fn init_session() -> Result<Session> {
+    let session = Session::builder()
+        .map_err(|e| anyhow!("create ORT session builder: {e}"))?
+        .with_intra_threads(1)
+        .map_err(|e| anyhow!("set intra threads: {e}"))?
+        .with_inter_threads(1)
+        .map_err(|e| anyhow!("set inter threads: {e}"))?
+        .commit_from_memory(SILERO_MODEL)
+        .map_err(|e| anyhow!("load Silero-VAD ONNX model from memory: {e}"))?;
+    Ok(session)
 }
 
 #[cfg(test)]
@@ -138,22 +157,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_classifier_matches_funasr_score_rule() {
-        assert!(is_speech_frame(&[0.1]));
-        assert!(is_speech_frame(&[0.2]));
-        assert!(!is_speech_frame(&[0.21]));
-        assert!(!is_speech_frame(&[0.9]));
-    }
-
-    #[test]
-    fn bundled_fsmn_model_loads_and_initial_silence_stops() {
-        let mut endpoint = SpeechEndpoint::create(0.1).expect("bundled FSMN-VAD model should load");
+    fn bundled_silero_model_loads_and_initial_silence_stops() {
+        let mut endpoint =
+            SpeechEndpoint::create(0.1).expect("bundled Silero-VAD model should load");
         let silence = vec![0.0; 1600];
         let mut fired = false;
         for _ in 0..24 {
             fired |= endpoint
                 .update(&silence)
-                .expect("FSMN-VAD should process silence");
+                .expect("Silero-VAD should process silence");
         }
         assert!(
             fired,

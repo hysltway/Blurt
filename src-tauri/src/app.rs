@@ -457,7 +457,7 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 match crate::endpoint::SpeechEndpoint::create(auto_stop) {
                     Ok(endpoint) => Some(endpoint),
                     Err(error) => {
-                        tracing::error!("FSMN-VAD 不可用，自动暂停降级为 RMS 噪声门：{error:#}");
+                        tracing::error!("Silero-VAD 不可用，自动暂停降级为 RMS 噪声门：{error:#}");
                         sample_rms_fallback.store(true, Ordering::Relaxed);
                         None
                     }
@@ -469,7 +469,9 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 match endpoint.as_mut().map(|endpoint| endpoint.update(samples)) {
                     Some(Ok(true)) => auto_stop_session(&sample_app, gen),
                     Some(Err(error)) => {
-                        tracing::error!("FSMN-VAD 运行失败，自动暂停降级为 RMS 噪声门：{error:#}");
+                        tracing::error!(
+                            "Silero-VAD 运行失败，自动暂停降级为 RMS 噪声门：{error:#}"
+                        );
                         endpoint = None;
                         sample_rms_fallback.store(true, Ordering::Relaxed);
                     }

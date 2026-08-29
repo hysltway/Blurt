@@ -1027,11 +1027,11 @@ mod tests {
                 (duration_s * 1_000_000.0) / rs_total_us
             );
 
-            // 3. FSMN-VAD 神经端点流式推理 (SpeechEndpoint / vad-burn)
+            // 3. Silero-VAD 神经端点流式推理 (SpeechEndpoint / ort)
             let mut endpoint = match crate::endpoint::SpeechEndpoint::create(2.0) {
                 Ok(ep) => ep,
                 Err(e) => {
-                    println!("  [3. FSMN-VAD 神经端点推理]: 初始化失败: {e}");
+                    println!("  [3. Silero-VAD 神经端点推理]: 初始化失败: {e}");
                     continue;
                 }
             };
@@ -1051,7 +1051,7 @@ mod tests {
             let vad_max = *vad_chunk_times.last().unwrap();
             let vad_mean = vad_chunk_times.iter().sum::<f64>() / vad_chunk_times.len() as f64;
             let vad_rtf = (vad_total_us / 1_000_000.0) / duration_s;
-            println!("  [3. FSMN-VAD 神经端点流式推理 (vad-burn, 20ms chunk = 320 样本)]");
+            println!("  [3. Silero-VAD 神经端点流式推理 (ort, 20ms chunk = 320 样本)]");
             println!("      20ms 单帧推理耗时: 均值={:.2} μs ({:.3} ms), p50={:.2} μs, p95={:.2} μs, p99={:.2} μs, max={:.2} μs", vad_mean, vad_mean / 1000.0, vad_p50, vad_p95, vad_p99, vad_max);
             println!(
                 "      20ms 帧预算利用率: {:.2}% (单核占用)",
