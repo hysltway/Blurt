@@ -27,12 +27,12 @@ const RING_BASE_R = 35;          // 环形基础半径
 
 /* 每状态一对色（深部/亮部），绸缕在两色间渐变，加色叠出高光 */
 const COL = {
-  bar:     { deep: [56, 58, 228], light: [150, 156, 255] }, // 聆听蓝紫动效
-  think:   { deep: [98, 88, 242], light: [182, 172, 255] }, // 识别靛紫动效
-  ok:      { deep: [3, 105, 161], light: [56, 189, 248] },  // 完成极光冰晶青碧蓝
-  err:     { deep: [169, 75, 89], light: [228, 157, 168] },   // 错误偏蓝红
-  quiet:   { deep: [105, 128, 124], light: [193, 215, 204] }, // 静默蓝绿灰
-  loading: { deep: [57, 113, 120], light: [201, 222, 164] }, // 加载青绿
+  bar:     { deep: [161, 140, 209], light: [255, 154, 158] }, // 聆听：Night Fade梦幻紫 + Warm Flame蜜桃粉
+  think:   { deep: [175, 145, 215], light: [251, 194, 235] }, // 识别：梦幻粉紫动效
+  ok:      { deep: [255, 160, 165], light: [252, 190, 170] },  // 完成：自然春日暖杏蜜桃
+  err:     { deep: [177, 42, 91], light: [255, 129, 119] },   // 错误：Young Passion 浆果红向珊瑚红
+  quiet:   { deep: [160, 150, 175], light: [220, 205, 215] }, // 静默柔灰紫
+  loading: { deep: [161, 140, 209], light: [252, 182, 159] }, // 加载紫杏
 };
 
 const canvas = document.getElementById('c');
@@ -240,21 +240,6 @@ function renderLine(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
   }
 
   ctx.globalCompositeOperation = 'source-over';
-
-  /* 成功脉冲 */
-  if (state === 'success' && te > 0.20) {
-    const k = clamp((te - 0.20) / 0.28, 0, 1);
-    ctx.globalAlpha = alpha * (1 - k);
-    ctx.strokeStyle = rgba(COL.ok.light, 0.9);
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.arc(CX, WY, 5 + 20 * easeOutCubic(k), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = rgba(COL.ok.light, 1);
-    ctx.beginPath();
-    ctx.arc(CX, WY, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
 }
 
 /* ---------- 环形/球体：iOS Siri 纯净流体彩色光晕 (Clean Vibrant Fluid Chroma) ---------- */
@@ -278,53 +263,54 @@ function renderRing(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
     blobR = 27 * (1 - 0.55 * easeK);
   }
 
-  // 纯正高饱和度调色板（避免混浊发灰与死白过曝）
+  // 纯正高饱和柔和渐变调色板（基于 WebGradients 暖粉紫/蜜桃杏/梦幻紫高级配色）
   let c1, c2, c3, c4, cBase;
   if (state === 'listen') {
-    // 经典流体四色：高饱和洋红粉 (Magenta)、电光青蓝 (Electric Cyan)、深邃靛蓝 (Royal Indigo)、暖阳珊瑚橙 (Vivid Coral)
-    c1 = [236, 64, 122];  // 鲜艳洋红粉
-    c2 = [6, 182, 212];   // 电光青蓝
-    c3 = [99, 102, 241];  // 皇家靛蓝
-    c4 = [251, 113, 36];  // 暖阳珊瑚橙
-    cBase = [79, 70, 229]; // 深邃基底蓝紫
+    // 经典暖粉紫梦幻流体：Warm Flame 暖蜜桃粉 + Night Fade 梦幻紫罗兰 + Spring Warmth 柔粉兰 + Juicy Peach 温润杏粉
+    c1 = [255, 140, 150];  // #ff8c96 Warm Flame 暖阳蜜桃粉
+    c2 = [161, 140, 209];  // #a18cd1 Night Fade 优雅紫罗兰
+    c3 = [251, 194, 235];  // #fbc2eb Spring Warmth 梦幻粉紫
+    c4 = [252, 182, 159];  // #fcb69f Juicy Peach 温润蜜桃杏
+    cBase = [178, 148, 220]; // 梦幻紫罗兰柔和基底
   } else if (state === 'process') {
     const p = currentProgress();
-    c1 = mixCol([139, 92, 246], [14, 165, 233], p);
-    c2 = mixCol([6, 182, 212], [56, 189, 248], p);
-    c3 = mixCol([59, 130, 246], [20, 184, 166], p);
-    c4 = mixCol([99, 102, 241], [56, 189, 248], p);
-    cBase = mixCol([99, 102, 241], [3, 105, 161], p);
+    // 识别中：紫罗兰与粉紫向温润晨光浅杏粉优雅流转
+    c1 = mixCol([161, 140, 209], [255, 154, 158], p);
+    c2 = mixCol([251, 194, 235], [252, 182, 159], p);
+    c3 = mixCol([178, 148, 220], [255, 209, 255], p);
+    c4 = mixCol([255, 154, 158], [255, 225, 205], p);
+    cBase = mixCol([161, 140, 209], [245, 175, 185], p);
   } else if (state === 'success') {
     const k = clamp(te / 0.28, 0, 1);
-    // 高级极光冰晶青碧蓝（Glacial Azure & Aurora Cyan-Teal）
-    const okSky = [14, 165, 233];      // 天空电光青蓝
-    const okGlacier = [56, 189, 248];  // 冰川晨曦青
-    const okAqua = [6, 182, 212];      // 极光海青
-    const okTeal = [20, 184, 166];     // 碧玉深青
-    const okBase = [3, 105, 161];      // 深邃晨曦蓝基底
-    c1 = mixCol([139, 92, 246], okSky, k);
-    c2 = mixCol([6, 182, 212], okGlacier, k);
-    c3 = mixCol([59, 130, 246], okAqua, k);
-    c4 = mixCol([99, 102, 241], okTeal, k);
-    cBase = mixCol([99, 102, 241], okBase, k);
+    // 自然温润春日暖杏蜜桃（Spring Warmth & Juicy Peach Pearl）
+    const okPeach = [255, 165, 168];      // 鲜嫩蜜桃粉
+    const okApricot = [252, 192, 172];    // 柔润蜜桃杏
+    const okPearl = [255, 216, 235];      // 珍珠柔粉白
+    const okGold = [255, 210, 185];       // 晨曦浅金杏
+    const okBase = [248, 172, 180];       // 温润暖蜜桃基底
+    c1 = mixCol([255, 154, 158], okPeach, k);
+    c2 = mixCol([252, 182, 159], okApricot, k);
+    c3 = mixCol([255, 209, 255], okPearl, k);
+    c4 = mixCol([255, 225, 205], okGold, k);
+    cBase = mixCol([245, 175, 185], okBase, k);
   } else if (state === 'error') {
-    c1 = [225, 29, 72];
-    c2 = [244, 63, 94];
-    c3 = [245, 158, 11];
-    c4 = [220, 38, 38];
-    cBase = [185, 28, 28];
+    c1 = [255, 129, 119]; // Young Passion 珊瑚红
+    c2 = [177, 42, 91];   // 浆果红
+    c3 = [245, 158, 11];  // 琥珀金
+    c4 = [220, 38, 38];   // 玫瑰红
+    cBase = [177, 42, 91];
   } else if (state === 'loading') {
-    c1 = [20, 184, 166];
-    c2 = [59, 130, 246];
-    c3 = [99, 102, 241];
-    c4 = [14, 165, 233];
-    cBase = [37, 99, 235];
+    c1 = [161, 140, 209];
+    c2 = [251, 194, 235];
+    c3 = [252, 182, 159];
+    c4 = [255, 154, 158];
+    cBase = [161, 140, 209];
   } else {
-    c1 = [100, 116, 139];
-    c2 = [71, 85, 105];
-    c3 = [148, 163, 184];
-    c4 = [51, 65, 85];
-    cBase = [71, 85, 105];
+    c1 = [160, 150, 175];
+    c2 = [185, 175, 200];
+    c3 = [220, 205, 215];
+    c4 = [170, 160, 185];
+    cBase = [160, 150, 175];
   }
 
   // --- 第 1 层：通透柔和的基底光晕 (Smooth Base Ambient Glow) ---
@@ -399,31 +385,6 @@ function renderRing(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
   ctx.arc(CX, CY, coreR, 0, Math.PI * 2);
   ctx.fill();
 
-  // --- 成功时的 3 道层叠极光柔光脉冲涟漪 (3 Cascading Aurora Bloom Ripples) ---
-  if (state === 'success') {
-    const ripples = [
-      { delay: 0.02, dur: 0.46, maxR: 44, bandW: 13, col: [56, 189, 248], peakA: 0.42 }, // 第 1 道：冰川青晨曦波
-      { delay: 0.12, dur: 0.52, maxR: 54, bandW: 16, col: [14, 165, 233], peakA: 0.35 }, // 第 2 道：电光天蓝主波
-      { delay: 0.22, dur: 0.56, maxR: 62, bandW: 18, col: [20, 184, 166], peakA: 0.26 }, // 第 3 道：碧玉青弥散波
-    ];
-
-    for (const r of ripples) {
-      const kp = clamp((te - r.delay) / r.dur, 0, 1);
-      if (kp > 0 && kp < 1) {
-        const pulseR = 10 + r.maxR * easeOutCubic(kp);
-        const innerR = Math.max(0, pulseR - r.bandW);
-        const pulseGrad = ctx.createRadialGradient(CX, CY, innerR, CX, CY, pulseR);
-        const waveAlpha = Math.sin(kp * Math.PI) * r.peakA * alpha;
-        pulseGrad.addColorStop(0, rgba(r.col, 0));
-        pulseGrad.addColorStop(0.55, rgba(r.col, waveAlpha));
-        pulseGrad.addColorStop(1, rgba(r.col, 0));
-        ctx.fillStyle = pulseGrad;
-        ctx.beginPath();
-        ctx.arc(CX, CY, pulseR, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
   ctx.restore();
 }
 
@@ -445,8 +406,8 @@ function frame() {
   const te = t - tEnter;
 
   if (state === 'success') {
-    // 优雅延长时间：前 0.38s 充分展现凝聚与 3 道极光波，0.38s~0.82s 舒缓淡出
-    const k = clamp((te - 0.38) / 0.44, 0, 1);
+    // 纯粹自然凝聚消融：0.15s~0.65s 舒缓平滑淡出
+    const k = clamp((te - 0.15) / 0.50, 0, 1);
     alpha *= 1 - easeOutCubic(k);
   } else if (state === 'error') {
     shakeX = Math.sin(te * 42) * 6 * Math.exp(-te * 4.5);
