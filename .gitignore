@@ -3,3 +3,10 @@
 *.log
 .DS_Store
 /models/
+
+# AI Agent Instructions & Configs
+AGENTS.md
+CLAUDE.md
+agents.md
+claude.md
+.claude/
