@@ -10,7 +10,6 @@
 
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -424,41 +423,23 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     hud::emit_state(app, "listen", None);
     tray::set_tooltip(app, "Blurt · 正在聆听…（Esc 取消）");
 
-    // 自动停止由 16kHz 流上的 FSMN-VAD 驱动，RMS 只负责 HUD 与噪声统计。
-    // 神经 VAD 无法初始化时保留原 RMS 门作为兜底；两条路径都只在切换模式结束会话。
+    // 自动停止由 16kHz 流上的 Silero-VAD 驱动，RMS 仅负责驱动 HUD 动效。
     let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
     let level_app = app.clone();
     let sample_app = app.clone();
     let done_app = app.clone();
-    let seed = audio::perceptual_to_rms(state.stats.lock().noise_floor.clamp(0.02, 0.4));
-    let mut gate = audio::SilenceGate::new(auto_stop, seed);
-    let use_rms_fallback = Arc::new(AtomicBool::new(false));
-    let level_rms_fallback = Arc::clone(&use_rms_fallback);
-    let sample_rms_fallback = Arc::clone(&use_rms_fallback);
-    let vad_t0 = Instant::now();
-    let mut vad_tick = 0u32;
     let rec = audio::start_recording(
         cfg.mic_device.clone(),
         cfg.max_record_secs,
         move |rms| {
             hud::emit_level(&level_app, audio::perceptual_level(rms));
-            let rms_stop = gate.update(rms, vad_t0.elapsed().as_secs_f32());
-            if level_rms_fallback.load(Ordering::Relaxed) && rms_stop {
-                auto_stop_session(&level_app, gen);
-            }
-            vad_tick += 1;
-            if auto_stop > 0.0 && vad_tick % 25 == 0 {
-                let mapped = audio::perceptual_level(gate.floor()).clamp(0.02, 0.4);
-                level_app.state::<AppState>().stats.lock().noise_floor = mapped;
-            }
         },
         move || {
             let mut endpoint = if auto_stop > 0.0 {
                 match crate::endpoint::SpeechEndpoint::create(auto_stop) {
                     Ok(endpoint) => Some(endpoint),
                     Err(error) => {
-                        tracing::error!("Silero-VAD 不可用，自动暂停降级为 RMS 噪声门：{error:#}");
-                        sample_rms_fallback.store(true, Ordering::Relaxed);
+                        tracing::error!("Silero-VAD 不可用: {error:#}");
                         None
                     }
                 }
@@ -469,11 +450,8 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 match endpoint.as_mut().map(|endpoint| endpoint.update(samples)) {
                     Some(Ok(true)) => auto_stop_session(&sample_app, gen),
                     Some(Err(error)) => {
-                        tracing::error!(
-                            "Silero-VAD 运行失败，自动暂停降级为 RMS 噪声门：{error:#}"
-                        );
+                        tracing::error!("Silero-VAD 运行失败: {error:#}");
                         endpoint = None;
-                        sample_rms_fallback.store(true, Ordering::Relaxed);
                     }
                     _ => {}
                 }
@@ -621,7 +599,7 @@ pub fn on_audio_ready(
                     match inject::inject(&text, &cfg.inject_mode, cfg.type_threshold) {
                         Ok(()) => {
                             hud::emit_state(&app, "success", None);
-                            finish_session(&app, gen, 650, ready_tooltip(&app));
+                            finish_session(&app, gen, 950, ready_tooltip(&app));
                         }
                         Err(e) => {
                             tracing::error!("注入失败：{e}（已复制到剪贴板兜底）");
