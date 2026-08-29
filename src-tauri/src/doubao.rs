@@ -15,7 +15,7 @@ use tungstenite::{connect, Message};
 use uuid::Uuid;
 
 const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
-const RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
+const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const AUDIO_CHUNK_SAMPLES: usize = 3200; // 200ms @ 16kHz，文档推荐值
 const RESULT_TIMEOUT: Duration = Duration::from_secs(45);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -192,6 +192,9 @@ fn full_request(hotwords: &str) -> Result<Vec<u8>> {
             "model_name": "bigmodel",
             "enable_itn": true,
             "enable_punc": true,
+            "enable_ddc": true,
+            "enable_nonstream": true,
+            "enable_lid": true,
             "show_utterances": true,
             "result_type": "full"
         }
@@ -327,6 +330,44 @@ fn hotword_items(hotwords: &str) -> Vec<&str> {
         .collect()
 }
 
+fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let char_indices: Vec<(usize, char)> = haystack.char_indices().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let needle_len = needle_chars.len();
+
+    let mut result = String::with_capacity(haystack.len());
+    let mut last_end = 0;
+    let mut i = 0;
+
+    while i < char_indices.len() {
+        let (byte_start, _) = char_indices[i];
+        if i + needle_len <= char_indices.len() {
+            let matches = needle_chars.iter().enumerate().all(|(offset, &nc)| {
+                let (_, hc) = char_indices[i + offset];
+                hc.to_lowercase().eq(nc.to_lowercase())
+            });
+            if matches {
+                result.push_str(&haystack[last_end..byte_start]);
+                result.push_str(replacement);
+                let match_end_byte = if i + needle_len < char_indices.len() {
+                    char_indices[i + needle_len].0
+                } else {
+                    haystack.len()
+                };
+                last_end = match_end_byte;
+                i += needle_len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result.push_str(&haystack[last_end..]);
+    result
+}
+
 fn apply_replacements(text: &str, hotwords: &str) -> String {
     let mut result = text.to_string();
     for item in hotword_items(hotwords) {
@@ -338,7 +379,7 @@ fn apply_replacements(text: &str, hotwords: &str) -> String {
         if from.is_empty() || to.is_empty() {
             continue;
         }
-        result = result.replace(from, to);
+        result = replace_case_insensitive(&result, from, to);
     }
     result
 }
@@ -372,10 +413,18 @@ mod tests {
     }
 
     #[test]
-    fn applies_configured_replacements() {
+    fn applies_configured_replacements_case_insensitively() {
         assert_eq!(
             apply_replacements("open cloud now", "Rust, cloud=>Claude"),
             "open Claude now"
+        );
+        assert_eq!(
+            apply_replacements("Use Cloud Code and Torrey", "cloud=>Claude, torrey=>Tauri"),
+            "Use Claude Code and Tauri"
+        );
+        assert_eq!(
+            apply_replacements("测试热刺哭", "热刺哭=>热词库"),
+            "测试热词库"
         );
     }
 
