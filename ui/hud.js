@@ -29,7 +29,7 @@ const RING_BASE_R = 35;          // 环形基础半径
 const COL = {
   bar:     { deep: [56, 58, 228], light: [150, 156, 255] }, // 聆听蓝紫动效
   think:   { deep: [98, 88, 242], light: [182, 172, 255] }, // 识别靛紫动效
-  ok:      { deep: [78, 127, 67], light: [168, 200, 126] },  // 完成青绿
+  ok:      { deep: [3, 105, 161], light: [56, 189, 248] },  // 完成极光冰晶青碧蓝
   err:     { deep: [169, 75, 89], light: [228, 157, 168] },   // 错误偏蓝红
   quiet:   { deep: [105, 128, 124], light: [193, 215, 204] }, // 静默蓝绿灰
   loading: { deep: [57, 113, 120], light: [201, 222, 164] }, // 加载青绿
@@ -257,110 +257,120 @@ function renderLine(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
   }
 }
 
-/* ---------- 环形/球体：iOS Siri 纯高斯模糊彩色流体光晕 (Pure Gaussian Blur Fluid Chroma) ---------- */
+/* ---------- 环形/球体：iOS Siri 纯净流体彩色光晕 (Clean Vibrant Fluid Chroma) ---------- */
 function renderRing(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
   const sig = state === 'listen' ? clamp(0.45 * loud + 0.55 * envLevel, 0, 1) : 0;
 
-  // 基础半径与轨道扩散距离随音量与状态动态扩张
-  let orbitD = 10 + 14 * Math.pow(sig, 0.7);
-  let blobR = 30 + 16 * Math.pow(sig, 0.7);
+  // 基础半径与轨道扩散距离随音量与状态动态扩张（在安全视口内）
+  let orbitD = 9 + 13 * Math.pow(sig, 0.7);
+  let blobR = 28 + 16 * Math.pow(sig, 0.7);
 
   if (state === 'process') {
-    orbitD = 11 + 2.5 * Math.sin(t * 3.2);
-    blobR = 32 + 3 * Math.sin(t * 2.8);
+    orbitD = 10 + 2.5 * Math.sin(t * 3.2);
+    blobR = 30 + 3 * Math.sin(t * 2.8);
   } else if (state === 'loading') {
-    orbitD = 8 + 2 * Math.sin(t * 2.4);
-    blobR = 26 + 3 * Math.sin(t * 2.4);
+    orbitD = 7 + 2 * Math.sin(t * 2.4);
+    blobR = 25 + 3 * Math.sin(t * 2.4);
   } else if (state === 'success') {
-    const k = easeOutCubic(clamp(te / 0.22, 0, 1));
-    orbitD = 10 * (1 - 0.7 * k);
-    blobR = 28 * (1 - 0.4 * k);
+    const k = clamp(te / 0.65, 0, 1);
+    const easeK = easeOutCubic(k);
+    orbitD = 8 * (1 - 0.85 * easeK);
+    blobR = 27 * (1 - 0.55 * easeK);
   }
 
-  // 颜色调色板根据状态平滑适配
-  let c1, c2, c3, c4;
+  // 纯正高饱和度调色板（避免混浊发灰与死白过曝）
+  let c1, c2, c3, c4, cBase;
   if (state === 'listen') {
-    // iOS Siri 经典四色：洋红玫瑰 (Magenta)、电光青蓝 (Electric Cyan)、深邃靛紫 (Indigo)、落日珊瑚 (Coral)
-    c1 = [236, 72, 153];
-    c2 = [6, 182, 212];
-    c3 = [99, 102, 241];
-    c4 = [244, 63, 94];
+    // 经典流体四色：高饱和洋红粉 (Magenta)、电光青蓝 (Electric Cyan)、深邃靛蓝 (Royal Indigo)、暖阳珊瑚橙 (Vivid Coral)
+    c1 = [236, 64, 122];  // 鲜艳洋红粉
+    c2 = [6, 182, 212];   // 电光青蓝
+    c3 = [99, 102, 241];  // 皇家靛蓝
+    c4 = [251, 113, 36];  // 暖阳珊瑚橙
+    cBase = [79, 70, 229]; // 深邃基底蓝紫
   } else if (state === 'process') {
     const p = currentProgress();
-    c1 = mixCol([139, 92, 246], [16, 185, 129], p);  // 紫 -> 翠绿
-    c2 = mixCol([6, 182, 212], [52, 211, 153], p);   // 青 -> 薄荷绿
-    c3 = mixCol([59, 130, 246], [16, 185, 129], p);  // 蓝 -> 翠绿
-    c4 = mixCol([99, 102, 241], [52, 211, 153], p);
+    c1 = mixCol([139, 92, 246], [14, 165, 233], p);
+    c2 = mixCol([6, 182, 212], [56, 189, 248], p);
+    c3 = mixCol([59, 130, 246], [20, 184, 166], p);
+    c4 = mixCol([99, 102, 241], [56, 189, 248], p);
+    cBase = mixCol([99, 102, 241], [3, 105, 161], p);
   } else if (state === 'success') {
-    c1 = [16, 185, 129];
-    c2 = [52, 211, 153];
-    c3 = [110, 231, 183];
-    c4 = [5, 150, 105];
+    const k = clamp(te / 0.28, 0, 1);
+    // 高级极光冰晶青碧蓝（Glacial Azure & Aurora Cyan-Teal）
+    const okSky = [14, 165, 233];      // 天空电光青蓝
+    const okGlacier = [56, 189, 248];  // 冰川晨曦青
+    const okAqua = [6, 182, 212];      // 极光海青
+    const okTeal = [20, 184, 166];     // 碧玉深青
+    const okBase = [3, 105, 161];      // 深邃晨曦蓝基底
+    c1 = mixCol([139, 92, 246], okSky, k);
+    c2 = mixCol([6, 182, 212], okGlacier, k);
+    c3 = mixCol([59, 130, 246], okAqua, k);
+    c4 = mixCol([99, 102, 241], okTeal, k);
+    cBase = mixCol([99, 102, 241], okBase, k);
   } else if (state === 'error') {
     c1 = [225, 29, 72];
     c2 = [244, 63, 94];
     c3 = [245, 158, 11];
     c4 = [220, 38, 38];
+    cBase = [185, 28, 28];
   } else if (state === 'loading') {
     c1 = [20, 184, 166];
     c2 = [59, 130, 246];
     c3 = [99, 102, 241];
     c4 = [14, 165, 233];
+    cBase = [37, 99, 235];
   } else {
     c1 = [100, 116, 139];
     c2 = [71, 85, 105];
     c3 = [148, 163, 184];
     c4 = [51, 65, 85];
+    cBase = [71, 85, 105];
   }
 
-  // --- 第 1 遍：广域高斯模糊漫射环境光 (Broad Ambient Diffusion Glow) ---
+  // --- 第 1 层：通透柔和的基底光晕 (Smooth Base Ambient Glow) ---
   ctx.save();
-  ctx.filter = 'blur(24px)';
-  ctx.globalCompositeOperation = 'lighter';
-  const ambientGrad = ctx.createRadialGradient(CX, CY, 0, CX, CY, blobR * 1.5);
-  ambientGrad.addColorStop(0, rgba(c3, 0.40 * alpha * band.aMul));
-  ambientGrad.addColorStop(0.55, rgba(c2, 0.22 * alpha * band.aMul));
-  ambientGrad.addColorStop(1, rgba(c1, 0));
+  ctx.globalCompositeOperation = 'source-over';
+  const ambientR = blobR * 1.32;
+  const ambientGrad = ctx.createRadialGradient(CX, CY, 0, CX, CY, ambientR);
+  ambientGrad.addColorStop(0, rgba(cBase, 0.42 * alpha * band.aMul));
+  ambientGrad.addColorStop(0.40, rgba(cBase, 0.25 * alpha * band.aMul));
+  ambientGrad.addColorStop(0.75, rgba(cBase, 0.07 * alpha * band.aMul));
+  ambientGrad.addColorStop(1, rgba(cBase, 0));
   ctx.fillStyle = ambientGrad;
   ctx.beginPath();
-  ctx.arc(CX, CY, blobR * 1.5, 0, Math.PI * 2);
+  ctx.arc(CX, CY, ambientR, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();
 
-  // --- 第 2 遍：多节点高斯模糊旋转流体光斑 (Gaussian Blurred Swirling Blobs) ---
-  ctx.save();
-  ctx.filter = 'blur(16px)';
-  ctx.globalCompositeOperation = 'lighter';
-
-  // 4 个在不同轨道与相位平滑旋转的流体彩色节点（完全消除刺眼白点，自然流体融合）
+  // --- 第 2 层：4 个旋转高饱和流体色斑 (4 Saturated Swirling Chroma Blobs) ---
+  // 使用 source-over 保持纯正色彩饱和度，绝无加色发白发灰与浑浊死白
   const blobs = [
     {
       x: CX + Math.cos(noiseT * 1.15) * orbitD,
       y: CY + Math.sin(noiseT * 1.15) * orbitD,
       r: blobR * 1.05,
       col: c1,
-      a: 0.46 * alpha * band.aMul,
+      a: 0.68 * alpha * band.aMul,
     },
     {
       x: CX + Math.cos(-noiseT * 1.35 + 2.1) * (orbitD * 0.95),
       y: CY + Math.sin(-noiseT * 1.35 + 2.1) * (orbitD * 0.95),
       r: blobR * 0.98,
       col: c2,
-      a: 0.48 * alpha * band.aMul,
+      a: 0.70 * alpha * band.aMul,
     },
     {
       x: CX + Math.cos(noiseT * 0.90 + 4.2) * (orbitD * 1.02),
       y: CY + Math.sin(noiseT * 0.90 + 4.2) * (orbitD * 1.02),
       r: blobR * 1.02,
       col: c3,
-      a: 0.48 * alpha * band.aMul,
+      a: 0.72 * alpha * band.aMul,
     },
     {
       x: CX + Math.cos(-noiseT * 0.80 + 5.4) * (orbitD * 0.88),
       y: CY + Math.sin(-noiseT * 0.80 + 5.4) * (orbitD * 0.88),
-      r: blobR * 0.92,
+      r: blobR * 0.94,
       col: c4,
-      a: 0.42 * alpha * band.aMul,
+      a: 0.65 * alpha * band.aMul,
     },
   ];
 
@@ -368,28 +378,53 @@ function renderRing(t, te, alpha, noiseT, heightK, peakAmp, procBlend) {
     if (b.a <= 0.005) continue;
     const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
     g.addColorStop(0, rgba(b.col, b.a));
-    g.addColorStop(0.5, rgba(b.col, b.a * 0.45));
+    g.addColorStop(0.35, rgba(b.col, b.a * 0.75));
+    g.addColorStop(0.68, rgba(b.col, b.a * 0.30));
+    g.addColorStop(0.88, rgba(b.col, b.a * 0.06));
     g.addColorStop(1, rgba(b.col, 0));
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.restore();
 
-  // --- 成功时的光晕脉冲波 ---
-  if (state === 'success' && te > 0.15) {
-    const k = clamp((te - 0.15) / 0.35, 0, 1);
-    ctx.save();
-    ctx.filter = 'blur(6px)';
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = rgba(COL.ok.light, (1 - k) * 0.85 * alpha);
-    ctx.lineWidth = 3.5 * (1 - 0.5 * k);
-    ctx.beginPath();
-    ctx.arc(CX, CY, 20 + 32 * easeOutCubic(k), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
+  // --- 第 3 层：核心极温和的通透微光 (Subtle Soft Core Specular) ---
+  const coreR = blobR * 0.45;
+  const coreGrad = ctx.createRadialGradient(CX, CY, 0, CX, CY, coreR);
+  coreGrad.addColorStop(0, rgba([255, 255, 255], 0.16 * alpha * band.aMul));
+  coreGrad.addColorStop(0.5, rgba([255, 255, 255], 0.06 * alpha * band.aMul));
+  coreGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = coreGrad;
+  ctx.beginPath();
+  ctx.arc(CX, CY, coreR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // --- 成功时的 3 道层叠极光柔光脉冲涟漪 (3 Cascading Aurora Bloom Ripples) ---
+  if (state === 'success') {
+    const ripples = [
+      { delay: 0.02, dur: 0.46, maxR: 44, bandW: 13, col: [56, 189, 248], peakA: 0.42 }, // 第 1 道：冰川青晨曦波
+      { delay: 0.12, dur: 0.52, maxR: 54, bandW: 16, col: [14, 165, 233], peakA: 0.35 }, // 第 2 道：电光天蓝主波
+      { delay: 0.22, dur: 0.56, maxR: 62, bandW: 18, col: [20, 184, 166], peakA: 0.26 }, // 第 3 道：碧玉青弥散波
+    ];
+
+    for (const r of ripples) {
+      const kp = clamp((te - r.delay) / r.dur, 0, 1);
+      if (kp > 0 && kp < 1) {
+        const pulseR = 10 + r.maxR * easeOutCubic(kp);
+        const innerR = Math.max(0, pulseR - r.bandW);
+        const pulseGrad = ctx.createRadialGradient(CX, CY, innerR, CX, CY, pulseR);
+        const waveAlpha = Math.sin(kp * Math.PI) * r.peakA * alpha;
+        pulseGrad.addColorStop(0, rgba(r.col, 0));
+        pulseGrad.addColorStop(0.55, rgba(r.col, waveAlpha));
+        pulseGrad.addColorStop(1, rgba(r.col, 0));
+        ctx.fillStyle = pulseGrad;
+        ctx.beginPath();
+        ctx.arc(CX, CY, pulseR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
+  ctx.restore();
 }
 
 /* ---------- 动画主循环 ---------- */
@@ -410,8 +445,9 @@ function frame() {
   const te = t - tEnter;
 
   if (state === 'success') {
-    const k = clamp((te - 0.20) / 0.30, 0, 1);
-    alpha *= 1 - k;
+    // 优雅延长时间：前 0.38s 充分展现凝聚与 3 道极光波，0.38s~0.82s 舒缓淡出
+    const k = clamp((te - 0.38) / 0.44, 0, 1);
+    alpha *= 1 - easeOutCubic(k);
   } else if (state === 'error') {
     shakeX = Math.sin(te * 42) * 6 * Math.exp(-te * 4.5);
     const k = clamp((te - 0.55) / 0.35, 0, 1);
