@@ -9,6 +9,16 @@ let usageStats = null;
 let saveTimer = null;
 let apiKeyState = { configured: false, active_name: null, count: 0, error: null };
 let isApiKeyModalOpen = false;
+let voiceprintInfo = { has_voiceprint: false, created_at: null, model_ready: false };
+let isVoiceprintModalOpen = false;
+let vpAudioCtx = null;
+let vpMediaStream = null;
+let vpScriptProcessor = null;
+let vpAnalyser = null;
+let vpRecordedChunks = [];
+let vpFinalSamples = null;
+let vpRecordStartTime = null;
+const VP_RECORD_DURATION = 10.0;
 let capturingHotkey = false;
 let pendingHotkey = null;
 let resizeQueued = false;
@@ -447,6 +457,307 @@ async function handleAddApiKey() {
   }
 }
 
+/* ---------- 专属声纹防干扰 ---------- */
+async function refreshVoiceprintInfo() {
+  try {
+    voiceprintInfo = await invoke('get_voiceprint_info');
+    renderVoiceprintState();
+  } catch (e) {
+    console.error('读取声纹信息失败:', e);
+  }
+}
+
+function renderVoiceprintState() {
+  const badge = $('voiceprintBadge');
+  const btnOpen = $('btnOpenVoiceprintModal');
+  const btnDelete = $('btnDeleteVoiceprint');
+  const enabledToggle = $('voiceprintEnabled');
+
+  if (voiceprintInfo.has_voiceprint) {
+    badge.textContent = '已就绪';
+    badge.className = 'active-key-badge vp-badge ready';
+    badge.title = voiceprintInfo.created_at ? `录制于 ${voiceprintInfo.created_at}` : '已录制专属声纹';
+    btnOpen.textContent = '管理';
+    if (btnDelete) btnDelete.hidden = false;
+    enabledToggle.disabled = false;
+  } else {
+    badge.textContent = '未录制';
+    badge.className = 'active-key-badge vp-badge';
+    badge.title = '尚未录制专属声纹';
+    btnOpen.textContent = '录制';
+    if (btnDelete) btnDelete.hidden = true;
+    enabledToggle.checked = false;
+  }
+}
+
+function resampleTo16k(samples, srcRate) {
+  if (!srcRate || srcRate === 16000) return samples;
+  const ratio = 16000 / srcRate;
+  const newLen = Math.round(samples.length * ratio);
+  const result = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const srcIdx = i / ratio;
+    const idx0 = Math.floor(srcIdx);
+    const idx1 = Math.min(idx0 + 1, samples.length - 1);
+    const frac = srcIdx - idx0;
+    result[i] = samples[idx0] * (1 - frac) + samples[idx1] * frac;
+  }
+  return result;
+}
+
+function drawIdleWaveform() {
+  const canvas = $('vpWaveCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#D1D5DB';
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+}
+
+function drawActiveWaveform() {
+  if (!isVoiceprintModalOpen || !vpAnalyser) return;
+  const canvas = $('vpWaveCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const bufferLength = vpAnalyser.fftSize;
+  const dataArray = new Uint8Array(bufferLength);
+  vpAnalyser.getByteTimeDomainData(dataArray);
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#262322';
+  ctx.beginPath();
+
+  const sliceWidth = w / bufferLength;
+  let x = 0;
+  for (let i = 0; i < bufferLength; i++) {
+    const v = dataArray[i] / 128.0;
+    const y = (v * h) / 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    x += sliceWidth;
+  }
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+
+  vpRecordAnimId = requestAnimationFrame(drawActiveWaveform);
+}
+
+function openVoiceprintModal() {
+  isVoiceprintModalOpen = true;
+  $('voiceprintModal').hidden = false;
+  $('voiceprintModal').setAttribute('aria-hidden', 'false');
+  resetVoiceprintStage();
+  scheduleSettingsResize();
+}
+
+function closeVoiceprintModal() {
+  stopVoiceprintRecording(false);
+  isVoiceprintModalOpen = false;
+  $('voiceprintModal').hidden = true;
+  $('voiceprintModal').setAttribute('aria-hidden', 'true');
+  scheduleSettingsResize();
+}
+
+function resetVoiceprintStage() {
+  stopVoiceprintRecording(false);
+  vpFinalSamples = null;
+  drawIdleWaveform();
+  $('vpStatusDot').className = 'dot';
+  $('vpStatusText').textContent = voiceprintInfo.has_voiceprint
+    ? '已录制专属声纹（点击“重新录制”可覆盖更新）'
+    : '准备就绪（点击“开始录音”，推荐朗读 8~10 秒）';
+  $('vpTimer').hidden = true;
+  $('vpTimer').textContent = '10.0s';
+  $('vpProgressWrap').hidden = true;
+  $('vpProgressBar').style.width = '0%';
+  $('btnRecordVoiceprint').textContent = '开始录音';
+  $('btnRecordVoiceprint').hidden = false;
+  $('btnRerecordVoiceprint').hidden = true;
+  $('btnSaveVoiceprint').hidden = true;
+  if ($('voiceprintThreshold')) {
+    const th = cfg.voiceprint_threshold ?? 0.30;
+    $('voiceprintThreshold').value = th;
+    if ($('voiceprintThresholdVal')) {
+      $('voiceprintThresholdVal').textContent = Number(th).toFixed(2);
+    }
+  }
+  if ($('btnDeleteVoiceprint')) {
+    $('btnDeleteVoiceprint').hidden = !voiceprintInfo.has_voiceprint;
+  }
+}
+
+async function startVoiceprintRecording() {
+  if (vpRecordStartTime) {
+    const elapsed = (Date.now() - vpRecordStartTime) / 1000;
+    if (elapsed >= 3.0) {
+      stopVoiceprintRecording(true);
+      return;
+    } else {
+      toast('建议至少朗读 3 秒以上以提取足够声纹特征');
+      return;
+    }
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+
+    vpMediaStream = stream;
+    vpAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = vpAudioCtx.createMediaStreamSource(stream);
+
+    vpAnalyser = vpAudioCtx.createAnalyser();
+    vpAnalyser.fftSize = 512;
+    source.connect(vpAnalyser);
+
+    vpRecordedChunks = [];
+    vpScriptProcessor = vpAudioCtx.createScriptProcessor(4096, 1, 1);
+    vpScriptProcessor.onaudioprocess = e => {
+      if (!isVoiceprintModalOpen) return;
+      const input = e.inputBuffer.getChannelData(0);
+      vpRecordedChunks.push(new Float32Array(input));
+    };
+    source.connect(vpScriptProcessor);
+    // 静音防啸叫：静音增益节点接入 destination，确保 onaudioprocess 持续触发且扬声器不产生回音
+    const muteGain = vpAudioCtx.createGain();
+    muteGain.gain.value = 0;
+    vpScriptProcessor.connect(muteGain);
+    muteGain.connect(vpAudioCtx.destination);
+
+    vpRecordStartTime = Date.now();
+    $('vpStatusDot').className = 'dot loading';
+    $('vpStatusText').textContent = '正在录音，请朗读示范文本（读完可点“完成录音”）…';
+    $('vpTimer').hidden = false;
+    $('vpProgressWrap').hidden = false;
+    $('btnRecordVoiceprint').hidden = false;
+    $('btnRecordVoiceprint').textContent = '完成录音';
+    $('btnRerecordVoiceprint').hidden = true;
+    $('btnSaveVoiceprint').hidden = true;
+
+    drawActiveWaveform();
+
+    const checkInterval = setInterval(() => {
+      if (!isVoiceprintModalOpen || !vpRecordStartTime) {
+        clearInterval(checkInterval);
+        return;
+      }
+      const elapsed = (Date.now() - vpRecordStartTime) / 1000;
+      const remaining = Math.max(0, VP_RECORD_DURATION - elapsed);
+      $('vpTimer').textContent = remaining.toFixed(1) + 's';
+      $('vpProgressBar').style.width = `${Math.min(100, (elapsed / VP_RECORD_DURATION) * 100)}%`;
+
+      if (elapsed >= VP_RECORD_DURATION) {
+        clearInterval(checkInterval);
+        stopVoiceprintRecording(true);
+      }
+    }, 80);
+  } catch (e) {
+    toast('无法访问麦克风：' + e);
+    resetVoiceprintStage();
+  }
+}
+
+function stopVoiceprintRecording(finished = false) {
+  if (vpRecordAnimId) {
+    cancelAnimationFrame(vpRecordAnimId);
+    vpRecordAnimId = null;
+  }
+  if (vpScriptProcessor) {
+    vpScriptProcessor.disconnect();
+    vpScriptProcessor = null;
+  }
+  if (vpAnalyser) {
+    vpAnalyser.disconnect();
+    vpAnalyser = null;
+  }
+  if (vpMediaStream) {
+    vpMediaStream.getTracks().forEach(t => t.stop());
+    vpMediaStream = null;
+  }
+  vpRecordStartTime = null;
+
+  if (finished && vpRecordedChunks.length > 0) {
+    const totalLen = vpRecordedChunks.reduce((acc, c) => acc + c.length, 0);
+    const merged = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of vpRecordedChunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const srcRate = vpAudioCtx ? vpAudioCtx.sampleRate : 16000;
+    vpFinalSamples = resampleTo16k(merged, srcRate);
+
+    if (vpAudioCtx) {
+      vpAudioCtx.close().catch(() => {});
+      vpAudioCtx = null;
+    }
+
+    $('vpStatusDot').className = 'dot ok';
+    $('vpStatusText').textContent = '录音完成！请确认文本完整后点击“保存声纹”';
+    $('vpTimer').textContent = `${(vpFinalSamples.length / 16000).toFixed(1)}s`;
+    $('vpProgressBar').style.width = '100%';
+    $('btnRecordVoiceprint').textContent = '开始录音';
+    $('btnRecordVoiceprint').hidden = true;
+    $('btnRerecordVoiceprint').hidden = false;
+    $('btnSaveVoiceprint').hidden = false;
+    drawIdleWaveform();
+  } else {
+    if (vpAudioCtx) {
+      vpAudioCtx.close().catch(() => {});
+      vpAudioCtx = null;
+    }
+  }
+}
+
+async function handleSaveVoiceprint() {
+  if (!vpFinalSamples || vpFinalSamples.length < 16000 * 2) {
+    toast('录音时长不足，请重新朗读完整范例文本');
+    return;
+  }
+  try {
+    $('btnSaveVoiceprint').disabled = true;
+    $('btnSaveVoiceprint').textContent = '正在计算…';
+    await invoke('save_voiceprint_from_audio', { samples: Array.from(vpFinalSamples) });
+    toast('专属声纹已保存');
+    cfg.voiceprint_enabled = true;
+    await save(true);
+    await refreshVoiceprintInfo();
+    closeVoiceprintModal();
+  } catch (e) {
+    toast('保存声纹失败：' + e);
+  } finally {
+    $('btnSaveVoiceprint').disabled = false;
+    $('btnSaveVoiceprint').textContent = '保存声纹';
+  }
+}
+
+async function handleDeleteVoiceprint() {
+  try {
+    await invoke('delete_voiceprint');
+    cfg.voiceprint_enabled = false;
+    await save(true);
+    await refreshVoiceprintInfo();
+    toast('专属声纹已清除');
+  } catch (e) {
+    toast('清除声纹失败：' + e);
+  }
+}
+
 /* ---------- 使用统计 ---------- */
 function dateKey(date) {
   const year = date.getFullYear();
@@ -722,6 +1033,10 @@ function render() {
   $('maxRecordVal').textContent = cfg.max_record_secs + ' 秒';
   $('autoStop').value = cfg.auto_stop_secs;
   $('autoStopVal').textContent = fmtAutoStop(cfg.auto_stop_secs);
+  $('voiceprintEnabled').checked = Boolean(cfg.voiceprint_enabled && voiceprintInfo.has_voiceprint);
+  $('voiceprintThreshold').value = cfg.voiceprint_threshold ?? 0.30;
+  $('voiceprintThresholdVal').textContent = (cfg.voiceprint_threshold ?? 0.30).toFixed(2);
+  renderVoiceprintState();
   renderApiKeyState();
 }
 
@@ -762,6 +1077,10 @@ function bind() {
       }
       if (isApiKeyModalOpen) {
         closeApiKeyModal();
+        return;
+      }
+      if (isVoiceprintModalOpen) {
+        closeVoiceprintModal();
         return;
       }
     }
@@ -816,6 +1135,42 @@ function bind() {
     save();
   });
 
+  // 专属声纹防干扰事件绑定
+  $('voiceprintEnabled').addEventListener('change', async event => {
+    if (event.target.checked && !voiceprintInfo.has_voiceprint) {
+      event.target.checked = false;
+      toast('请先录制专属声纹');
+      openVoiceprintModal();
+      return;
+    }
+    cfg.voiceprint_enabled = event.target.checked;
+    await save();
+  });
+
+  $('voiceprintThreshold').addEventListener('input', event => {
+    cfg.voiceprint_threshold = parseFloat(event.target.value);
+    $('voiceprintThresholdVal').textContent = cfg.voiceprint_threshold.toFixed(2);
+    save();
+  });
+
+  $('btnOpenVoiceprintModal').addEventListener('click', openVoiceprintModal);
+  if ($('btnDeleteVoiceprint')) {
+    $('btnDeleteVoiceprint').addEventListener('click', handleDeleteVoiceprint);
+  }
+  $('btnCloseVoiceprintModal').addEventListener('click', closeVoiceprintModal);
+  if ($('btnDoneVoiceprintModal')) {
+    $('btnDoneVoiceprintModal').addEventListener('click', closeVoiceprintModal);
+  }
+  $('voiceprintModal').addEventListener('click', event => {
+    if (event.target === $('voiceprintModal')) {
+      closeVoiceprintModal();
+    }
+  });
+
+  $('btnRecordVoiceprint').addEventListener('click', startVoiceprintRecording);
+  $('btnRerecordVoiceprint').addEventListener('click', startVoiceprintRecording);
+  $('btnSaveVoiceprint').addEventListener('click', handleSaveVoiceprint);
+
   // API 密钥二级弹窗事件
   $('btnOpenApiKeyModal').addEventListener('click', openApiKeyModal);
   $('btnCloseApiKeyModal').addEventListener('click', closeApiKeyModal);
@@ -868,6 +1223,7 @@ function bind() {
     invoke('doubao_api_key_status'),
     invoke('get_usage_stats'),
   ]);
+  await refreshVoiceprintInfo();
   render();
   renderUsageStats(usageStats);
   bind();
