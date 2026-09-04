@@ -423,8 +423,14 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
     hud::emit_state(app, "listen", None);
     tray::set_tooltip(app, "Blurt · 正在聆听…（Esc 取消）");
 
-    // 自动停止由 16kHz 流上的 Silero-VAD 驱动，RMS 仅负责驱动 HUD 动效。
+    // 自动停止由 16kHz 流上的 Silero-VAD + ERes2Net 声纹驱动，RMS 仅负责驱动 HUD 动效。
     let auto_stop = cfg.auto_stop_secs.clamp(0.0, 10.0);
+    let vp_enabled = cfg.voiceprint_enabled;
+    let vp_threshold = cfg.voiceprint_threshold;
+    let last_target = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let last_target_in = std::sync::Arc::clone(&last_target);
+    let last_target_done = std::sync::Arc::clone(&last_target);
+
     let level_app = app.clone();
     let sample_app = app.clone();
     let done_app = app.clone();
@@ -436,10 +442,14 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
         },
         move || {
             let mut endpoint = if auto_stop > 0.0 {
-                match crate::endpoint::SpeechEndpoint::create(auto_stop) {
+                match crate::endpoint::SpeechEndpoint::create_with_voiceprint(
+                    auto_stop,
+                    vp_enabled,
+                    vp_threshold,
+                ) {
                     Ok(endpoint) => Some(endpoint),
                     Err(error) => {
-                        tracing::error!("Silero-VAD 不可用: {error:#}");
+                        tracing::error!("端点检测初始化不可用: {error:#}");
                         None
                     }
                 }
@@ -450,15 +460,33 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                 match endpoint.as_mut().map(|endpoint| endpoint.update(samples)) {
                     Some(Ok(true)) => auto_stop_session(&sample_app, gen),
                     Some(Err(error)) => {
-                        tracing::error!("Silero-VAD 运行失败: {error:#}");
+                        tracing::error!("端点检测运行失败: {error:#}");
                         endpoint = None;
                     }
                     _ => {}
                 }
-                api_sender.push(samples);
+                if let Some(ep) = endpoint.as_ref() {
+                    let last_sp = ep.last_target_speech_samples();
+                    if last_sp > 0 {
+                        last_target_in.store(last_sp, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                // 未启用声纹抗干扰时直接流式推送；启用时在交付时剔除尾音后一次性推送
+                if !vp_enabled {
+                    api_sender.push(samples);
+                }
             }
         },
-        move |res| on_audio_ready(&done_app, gen, res, api_stream),
+        move |res| {
+            on_audio_ready(
+                &done_app,
+                gen,
+                res,
+                api_stream,
+                last_target_done,
+                vp_enabled,
+            )
+        },
     );
 
     match rec {
@@ -523,6 +551,8 @@ pub fn on_audio_ready(
     gen: u64,
     res: Result<Vec<f32>, String>,
     api_stream: doubao::Stream,
+    last_target_samples: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    vp_enabled: bool,
 ) {
     let state = app.state::<AppState>();
     {
@@ -538,7 +568,7 @@ pub fn on_audio_ready(
     }
     state.playback_ducker.restore();
 
-    let samples = match res {
+    let mut samples = match res {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("录音失败：{e}");
@@ -548,6 +578,27 @@ pub fn on_audio_ready(
             return;
         }
     };
+
+    // 启用专属声纹抗干扰时，若末尾存在大段旁人语音，则在安全保留区外剔除
+    if vp_enabled {
+        let last_sp = last_target_samples.load(std::sync::atomic::Ordering::Relaxed);
+        let total_sp = samples.len();
+        // 关键防护：仅当主人发音已被有效识别（>= 0.5s 样本），且末尾有超过 1.2s (19200 样本) 的持续旁人插话时才截断。
+        // 正常短语音或自然静音停顿（通常 < 1.2s）保留全貌，由 audio::trim_silence 平滑处理，杜绝误切。
+        if last_sp >= 8000 && total_sp > last_sp + 19200 {
+            // 保留 600ms 安全余量（9600 样本 @ 16kHz），确保主人末字发音与混响完整保留
+            let safe_cutoff = (last_sp + 9600).min(total_sp);
+            tracing::info!(
+                "声纹抗干扰剔除旁人尾音：原始 {} 样本 ({:.2}s)，裁剪至 {} 样本 ({:.2}s)",
+                total_sp,
+                total_sp as f32 / TARGET_SR_F,
+                safe_cutoff,
+                safe_cutoff as f32 / TARGET_SR_F
+            );
+            samples.truncate(safe_cutoff);
+        }
+        api_stream.audio_sender().push(&samples);
+    }
 
     let raw_s = samples.len() as f32 / TARGET_SR_F;
     // 保存静音裁剪前的真实采集音频，便于复现长音频问题。

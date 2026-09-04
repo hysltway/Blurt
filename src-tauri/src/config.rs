@@ -28,6 +28,15 @@ pub struct Config {
     pub auto_stop_secs: f32,
     /// 开机自启动
     pub autostart: bool,
+    /// 是否开启专属声纹防干扰
+    pub voiceprint_enabled: bool,
+    /// 声纹相似度阈值，默认 0.60 (范围 0.50 ~ 0.80)
+    #[serde(default = "default_voiceprint_threshold")]
+    pub voiceprint_threshold: f32,
+}
+
+fn default_voiceprint_threshold() -> f32 {
+    0.30
 }
 
 impl Default for Config {
@@ -41,6 +50,8 @@ impl Default for Config {
             max_record_secs: 120,
             auto_stop_secs: 2.0,
             autostart: false,
+            voiceprint_enabled: false,
+            voiceprint_threshold: default_voiceprint_threshold(),
         }
     }
 }

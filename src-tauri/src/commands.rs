@@ -162,3 +162,23 @@ pub fn cancel_session(app: AppHandle) {
 pub fn get_noise_floor(state: State<'_, AppState>) -> f32 {
     state.stats.lock().noise_floor
 }
+
+#[tauri::command]
+pub fn get_voiceprint_info() -> crate::voiceprint::VoiceprintInfo {
+    crate::voiceprint::get_voiceprint_info()
+}
+
+#[tauri::command]
+pub fn save_voiceprint_from_audio(samples: Vec<f32>) -> Result<(), String> {
+    crate::voiceprint::save_voiceprint_from_audio(&samples).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn delete_voiceprint() -> Result<(), String> {
+    crate::voiceprint::delete_voiceprint().map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn test_voiceprint_match(samples: Vec<f32>) -> Result<Option<f32>, String> {
+    crate::voiceprint::test_voiceprint_match(&samples).map_err(|e| format!("{e:#}"))
+}

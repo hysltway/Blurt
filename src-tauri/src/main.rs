@@ -17,6 +17,7 @@ mod hud;
 mod inject;
 mod media_volume;
 mod tray;
+mod voiceprint;
 
 fn init_logging() {
     use tracing_subscriber::prelude::*;
@@ -88,6 +89,10 @@ fn main() {
             commands::open_log_dir,
             commands::cancel_session,
             commands::get_noise_floor,
+            commands::get_voiceprint_info,
+            commands::save_voiceprint_from_audio,
+            commands::delete_voiceprint,
+            commands::test_voiceprint_match,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
