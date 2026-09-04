@@ -471,8 +471,13 @@ fn start_recording(app: &AppHandle, session: &mut Session) {
                         last_target_in.store(last_sp, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                // 未启用声纹抗干扰时直接流式推送；启用时在交付时剔除尾音后一次性推送
-                if !vp_enabled {
+                let is_intruder = endpoint
+                    .as_ref()
+                    .map(|ep| ep.is_intruder_active())
+                    .unwrap_or(false);
+                // 仅当确认已被判定为旁人持续插话时暂停推送，避免将旁人语音送入识别；
+                // 正常说话与短暂停顿均实时流式推送，保障豆包 ASR 在线识别并彻底消除 8 秒空闲超时
+                if !is_intruder {
                     api_sender.push(samples);
                 }
             }
@@ -597,7 +602,6 @@ pub fn on_audio_ready(
             );
             samples.truncate(safe_cutoff);
         }
-        api_stream.audio_sender().push(&samples);
     }
 
     let raw_s = samples.len() as f32 / TARGET_SR_F;

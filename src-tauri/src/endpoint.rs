@@ -95,6 +95,10 @@ impl SpeechEndpoint {
         self.last_target_speech_samples
     }
 
+    pub fn is_intruder_active(&self) -> bool {
+        self.intruder_active
+    }
+
     /// Accept incremental 16 kHz mono samples. Returns true exactly once after
     /// Silero confirms a speech segment ended, or after the initial no-speech timeout.
     pub fn update(&mut self, samples: &[f32]) -> Result<bool> {
