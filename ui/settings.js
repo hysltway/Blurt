@@ -18,6 +18,7 @@ let vpAnalyser = null;
 let vpRecordedChunks = [];
 let vpFinalSamples = null;
 let vpRecordStartTime = null;
+let vpRecordAnimId = null;
 const VP_RECORD_DURATION = 10.0;
 let capturingHotkey = false;
 let pendingHotkey = null;
@@ -607,15 +608,20 @@ async function startVoiceprintRecording() {
     }
   }
 
+  let stream = null;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-    });
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+    } catch (_fallback) {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
 
     vpMediaStream = stream;
     vpAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -667,55 +673,65 @@ async function startVoiceprintRecording() {
       }
     }, 80);
   } catch (e) {
-    toast('无法访问麦克风：' + e);
+    toast('无法访问麦克风：' + (e.message || e));
     resetVoiceprintStage();
   }
 }
 
 function stopVoiceprintRecording(finished = false) {
-  if (vpRecordAnimId) {
-    cancelAnimationFrame(vpRecordAnimId);
-    vpRecordAnimId = null;
-  }
-  if (vpScriptProcessor) {
-    vpScriptProcessor.disconnect();
-    vpScriptProcessor = null;
-  }
-  if (vpAnalyser) {
-    vpAnalyser.disconnect();
-    vpAnalyser = null;
-  }
-  if (vpMediaStream) {
-    vpMediaStream.getTracks().forEach(t => t.stop());
-    vpMediaStream = null;
+  try {
+    if (vpRecordAnimId) {
+      cancelAnimationFrame(vpRecordAnimId);
+      vpRecordAnimId = null;
+    }
+    if (vpScriptProcessor) {
+      vpScriptProcessor.disconnect();
+      vpScriptProcessor = null;
+    }
+    if (vpAnalyser) {
+      vpAnalyser.disconnect();
+      vpAnalyser = null;
+    }
+    if (vpMediaStream) {
+      vpMediaStream.getTracks().forEach(t => t.stop());
+      vpMediaStream = null;
+    }
+  } catch (err) {
+    console.warn('停止录音资源清理异常:', err);
   }
   vpRecordStartTime = null;
 
   if (finished && vpRecordedChunks.length > 0) {
-    const totalLen = vpRecordedChunks.reduce((acc, c) => acc + c.length, 0);
-    const merged = new Float32Array(totalLen);
-    let offset = 0;
-    for (const chunk of vpRecordedChunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    const srcRate = vpAudioCtx ? vpAudioCtx.sampleRate : 16000;
-    vpFinalSamples = resampleTo16k(merged, srcRate);
+    try {
+      const totalLen = vpRecordedChunks.reduce((acc, c) => acc + c.length, 0);
+      const merged = new Float32Array(totalLen);
+      let offset = 0;
+      for (const chunk of vpRecordedChunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const srcRate = vpAudioCtx ? vpAudioCtx.sampleRate : 16000;
+      vpFinalSamples = resampleTo16k(merged, srcRate);
 
-    if (vpAudioCtx) {
-      vpAudioCtx.close().catch(() => {});
-      vpAudioCtx = null;
-    }
+      if (vpAudioCtx) {
+        vpAudioCtx.close().catch(() => {});
+        vpAudioCtx = null;
+      }
 
-    $('vpStatusDot').className = 'dot ok';
-    $('vpStatusText').textContent = '录音完成！请确认文本完整后点击“保存声纹”';
-    $('vpTimer').textContent = `${(vpFinalSamples.length / 16000).toFixed(1)}s`;
-    $('vpProgressBar').style.width = '100%';
-    $('btnRecordVoiceprint').textContent = '开始录音';
-    $('btnRecordVoiceprint').hidden = true;
-    $('btnRerecordVoiceprint').hidden = false;
-    $('btnSaveVoiceprint').hidden = false;
-    drawIdleWaveform();
+      $('vpStatusDot').className = 'dot ok';
+      $('vpStatusText').textContent = '录音完成！请确认文本完整后点击“保存声纹”';
+      $('vpTimer').textContent = `${(vpFinalSamples.length / 16000).toFixed(1)}s`;
+      $('vpProgressBar').style.width = '100%';
+      $('btnRecordVoiceprint').textContent = '开始录音';
+      $('btnRecordVoiceprint').hidden = true;
+      $('btnRerecordVoiceprint').hidden = false;
+      $('btnSaveVoiceprint').hidden = false;
+      drawIdleWaveform();
+    } catch (err) {
+      console.error('声纹重采样失败:', err);
+      toast('音频处理失败：' + (err.message || err));
+      resetVoiceprintStage();
+    }
   } else {
     if (vpAudioCtx) {
       vpAudioCtx.close().catch(() => {});
