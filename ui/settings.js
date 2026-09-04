@@ -574,13 +574,13 @@ function resetVoiceprintStage() {
   drawIdleWaveform();
   $('vpStatusDot').className = 'dot';
   $('vpStatusText').textContent = voiceprintInfo.has_voiceprint
-    ? '已录制专属声纹（点击“重新录制”可覆盖更新）'
-    : '准备就绪（点击“开始录音”，推荐朗读 8~10 秒）';
+    ? '已录制专属声纹'
+    : '准备就绪';
   $('vpTimer').hidden = true;
   $('vpTimer').textContent = '10.0s';
   $('vpProgressWrap').hidden = true;
   $('vpProgressBar').style.width = '0%';
-  $('btnRecordVoiceprint').textContent = '开始录音';
+  $('btnRecordVoiceprint').textContent = voiceprintInfo.has_voiceprint ? '重新录制' : '开始录音';
   $('btnRecordVoiceprint').hidden = false;
   $('btnRerecordVoiceprint').hidden = true;
   $('btnSaveVoiceprint').hidden = true;
@@ -603,7 +603,7 @@ async function startVoiceprintRecording() {
       stopVoiceprintRecording(true);
       return;
     } else {
-      toast('建议至少朗读 3 秒以上以提取足够声纹特征');
+      toast('建议至少朗读 3 秒以上');
       return;
     }
   }
@@ -647,7 +647,7 @@ async function startVoiceprintRecording() {
 
     vpRecordStartTime = Date.now();
     $('vpStatusDot').className = 'dot loading';
-    $('vpStatusText').textContent = '正在录音，请朗读示范文本（读完可点“完成录音”）…';
+    $('vpStatusText').textContent = '正在录音…';
     $('vpTimer').hidden = false;
     $('vpProgressWrap').hidden = false;
     $('btnRecordVoiceprint').hidden = false;
@@ -719,7 +719,7 @@ function stopVoiceprintRecording(finished = false) {
       }
 
       $('vpStatusDot').className = 'dot ok';
-      $('vpStatusText').textContent = '录音完成！请确认文本完整后点击“保存声纹”';
+      $('vpStatusText').textContent = '录音完成';
       $('vpTimer').textContent = `${(vpFinalSamples.length / 16000).toFixed(1)}s`;
       $('vpProgressBar').style.width = '100%';
       $('btnRecordVoiceprint').textContent = '开始录音';
@@ -742,7 +742,7 @@ function stopVoiceprintRecording(finished = false) {
 
 async function handleSaveVoiceprint() {
   if (!vpFinalSamples || vpFinalSamples.length < 16000 * 2) {
-    toast('录音时长不足，请重新朗读完整范例文本');
+    toast('录音时长不足，请重新朗读');
     return;
   }
   try {

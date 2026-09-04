@@ -1373,7 +1373,7 @@ input[type="range"]::-webkit-slider-thumb:active {
 }
 
 .voiceprint-modal-card {
-  width: min(420px, calc(100vw - 32px));
+  width: min(410px, calc(100vw - 32px));
 }
 
 .voiceprint-modal-body {
@@ -1381,13 +1381,6 @@ input[type="range"]::-webkit-slider-thumb:active {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.vp-guide-desc {
-  font-size: 11px;
-  color: var(--ink-soft);
-  line-height: 1.5;
-  margin: 0;
 }
 
 .vp-prompt-box {
@@ -1402,7 +1395,7 @@ input[type="range"]::-webkit-slider-thumb:active {
   line-height: 1.6;
   color: var(--ink);
   margin: 0;
-  font-weight: 500;
+  font-weight: 450;
   letter-spacing: 0.1px;
 }
 
@@ -1418,8 +1411,8 @@ input[type="range"]::-webkit-slider-thumb:active {
 
 .vp-visualizer-wrap {
   width: 100%;
-  height: 40px;
-  border-radius: 4px;
+  height: 36px;
+  border-radius: 6px;
   background: rgba(0, 0, 0, 0.02);
   display: flex;
   align-items: center;
@@ -1431,32 +1424,6 @@ input[type="range"]::-webkit-slider-thumb:active {
   width: 100%;
   height: 100%;
   display: block;
-}
-
-.vp-status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 18px;
-}
-
-.vp-status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.vp-status-text {
-  font-size: 11px;
-  color: var(--ink-soft);
-  font-weight: 500;
-}
-
-.vp-timer {
-  font-family: "Cascadia Mono", "SF Mono", monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--brand);
 }
 
 .vp-progress-bar-wrap {
@@ -1474,11 +1441,39 @@ input[type="range"]::-webkit-slider-thumb:active {
   transition: width 80ms linear;
 }
 
+.vp-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.vp-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vp-status-text {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.vp-timer {
+  font-family: "Cascadia Mono", "SF Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+  margin-left: 2px;
+}
+
 .vp-record-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .vp-threshold-section {
@@ -1519,23 +1514,16 @@ input[type="range"]::-webkit-slider-thumb:active {
 .vp-threshold-legend {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: -2px;
-}
-
-.vp-threshold-tip {
   font-size: 10.5px;
   color: var(--muted);
-  line-height: 1.4;
-  margin: 2px 0 0;
+  margin-top: -1px;
 }
 
 .vp-modal-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 4px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
   margin-top: 2px;
 }

@@ -253,10 +253,6 @@
     </header>
 
     <div class="modal-body voiceprint-modal-body">
-      <p class="vp-guide-desc">
-        用自然音量和语速朗读示范文本（约 8~10 秒），涵盖丰富音素，大幅提升声纹泛化质量：
-      </p>
-
       <div class="vp-prompt-box">
         <p class="vp-prompt-text" id="vpPromptText">
           “你好 Blurt，这是我的专属声纹。通过语音输入释放双手，中英混合随心表达。无论在安静工位还是团队讨论中，都能精准锁定我的声音，随时记录代码与灵感。”
@@ -265,42 +261,38 @@
 
       <div class="vp-recording-stage">
         <div class="vp-visualizer-wrap">
-          <canvas id="vpWaveCanvas" class="vp-canvas" width="340" height="38"></canvas>
-        </div>
-        <div class="vp-status-row">
-          <div class="vp-status-indicator">
-            <span class="dot" id="vpStatusDot"></span>
-            <span class="vp-status-text" id="vpStatusText">准备就绪（推荐朗读 8~10 秒）</span>
-          </div>
-          <span class="vp-timer" id="vpTimer" hidden>10.0s</span>
+          <canvas id="vpWaveCanvas" class="vp-canvas" width="340" height="36"></canvas>
         </div>
         <div class="vp-progress-bar-wrap" id="vpProgressWrap" hidden>
           <div class="vp-progress-bar" id="vpProgressBar"></div>
         </div>
-      </div>
-
-      <div class="vp-record-actions">
-        <button class="btn primary" id="btnRecordVoiceprint" type="button">开始录音</button>
-        <button class="btn" id="btnRerecordVoiceprint" type="button" hidden>重新录制</button>
-        <button class="btn primary" id="btnSaveVoiceprint" type="button" hidden>保存声纹</button>
+        <div class="vp-status-row">
+          <div class="vp-status-indicator">
+            <span class="dot" id="vpStatusDot"></span>
+            <span class="vp-status-text" id="vpStatusText">准备就绪</span>
+            <span class="vp-timer" id="vpTimer" hidden>10.0s</span>
+          </div>
+          <div class="vp-record-actions">
+            <button class="btn btn-sm primary" id="btnRecordVoiceprint" type="button">开始录音</button>
+            <button class="btn btn-sm" id="btnRerecordVoiceprint" type="button" hidden>重新录制</button>
+            <button class="btn btn-sm primary" id="btnSaveVoiceprint" type="button" hidden>保存声纹</button>
+          </div>
+        </div>
       </div>
 
       <div class="vp-threshold-section">
         <div class="vp-threshold-header">
-          <label for="voiceprintThreshold">相似度识别门限</label>
+          <label for="voiceprintThreshold">识别门限</label>
           <span class="val" id="voiceprintThresholdVal">0.30</span>
         </div>
         <div class="range-wrap vp-range-wrap">
           <input type="range" id="voiceprintThreshold" min="0.15" max="0.45" step="0.01" value="0.30" />
         </div>
         <div class="vp-threshold-legend">
-          <span>0.22 宽松（平缓微弱音）</span>
-          <span>0.30 推荐均衡</span>
-          <span>0.38 严苛（强抗邻座）</span>
+          <span>宽松 0.22</span>
+          <span>推荐 0.30</span>
+          <span>严苛 0.38</span>
         </div>
-        <p class="vp-threshold-tip">
-          调低门限更不易误切本人语句（适合日常语速与短句）；调高门限对邻桌他人大声交谈抗干扰更强。
-        </p>
       </div>
 
       <div class="vp-modal-footer">
